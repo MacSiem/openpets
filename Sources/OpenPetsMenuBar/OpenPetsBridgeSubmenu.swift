@@ -17,6 +17,26 @@ import Foundation
 // launchd agent isn't loaded, the submenu shows "Not installed" and links
 // to the install instructions.
 
+// Parsed `openpets-bridge config show` output. Mirrors the Python `export_json`.
+struct BridgeState {
+    var mode: String              // "single" | "multi"
+    var sources: [SourceState]
+
+    struct SourceState {
+        var id: String
+        var label: String
+        var icon: String
+        var enabled: Bool
+        var petDir: String?       // from extra.pet_dir or multi_pet.pet
+    }
+}
+
+// Pet pack discovered on disk — for the per-source pet picker.
+struct BridgePetPack {
+    var displayName: String
+    var path: String              // absolute path to pet pack directory
+}
+
 @MainActor
 final class OpenPetsBridgeSubmenu: NSObject {
     static let shared = OpenPetsBridgeSubmenu()
@@ -24,6 +44,10 @@ final class OpenPetsBridgeSubmenu: NSObject {
     private let label = "openpets-bridge"
     private let launchdLabel = "sh.openpets.bridge"
     private var refreshTimer: Timer?
+
+    // Cached state — refreshed on each refreshNow() call.
+    private var state: BridgeState?
+    private var pets: [BridgePetPack] = []
 
     // Items we update from the timer
     private lazy var statusItem: NSMenuItem = {
@@ -89,16 +113,41 @@ final class OpenPetsBridgeSubmenu: NSObject {
     }()
 
     // Build the submenu item that gets attached to a parent menu.
-    // We rebuild the submenu structure each time to allow for per-state items.
+    // The submenu is a NSMenu delegate target — we rebuild its contents
+    // on `menuNeedsUpdate` so toggles always reflect the latest config.toml.
     func makeSubmenuItem() -> NSMenuItem {
         let parent = NSMenuItem(title: "Bridge", action: nil, keyEquivalent: "")
         let sub = NSMenu(title: "Bridge")
         sub.autoenablesItems = false
+        sub.delegate = self
+        rebuildSubmenu(sub)   // initial contents
+        parent.submenu = sub
+        refreshNow()
+        ensureTimer()
+        return parent
+    }
+
+    private weak var submenuRef: NSMenu?
+
+    private func rebuildSubmenu(_ sub: NSMenu) {
+        submenuRef = sub
+        sub.removeAllItems()
+        let installed = (bridgeBinaryPath() != nil)
 
         sub.addItem(statusItem)
         sub.addItem(.separator())
         sub.addItem(startStopItem)
         sub.addItem(restartItem)
+
+        if installed {
+            sub.addItem(.separator())
+            sub.addItem(makeModeItem())
+            sub.addItem(makeSourcesItem())
+            if state?.mode == "multi" {
+                sub.addItem(makePetsItem())
+            }
+        }
+
         sub.addItem(.separator())
         sub.addItem(openConfigItem)
         sub.addItem(openLogItem)
@@ -106,14 +155,142 @@ final class OpenPetsBridgeSubmenu: NSObject {
         sub.addItem(.separator())
         sub.addItem(clearDoneItem)
         sub.addItem(clearAllItem)
-        sub.addItem(.separator())
-        sub.addItem(installItem)
+
+        if !installed {
+            sub.addItem(.separator())
+            sub.addItem(installItem)
+        }
+    }
+
+    // MARK: - Mode submenu (Single | Multi)
+
+    private func makeModeItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        let sub = NSMenu(title: "Mode")
+        sub.autoenablesItems = false
+
+        let currentMode = state?.mode ?? "single"
+
+        let single = NSMenuItem(title: "Single pet (icon per bubble)",
+                                 action: #selector(setModeSingle),
+                                 keyEquivalent: "")
+        single.target = self
+        single.state = (currentMode == "single") ? .on : .off
+        sub.addItem(single)
+
+        let multi = NSMenuItem(title: "Multi-pet (one pet per AI)",
+                                action: #selector(setModeMulti),
+                                keyEquivalent: "")
+        multi.target = self
+        multi.state = (currentMode == "multi") ? .on : .off
+        sub.addItem(multi)
 
         parent.submenu = sub
-        refreshNow()
-        ensureTimer()
         return parent
     }
+
+    @objc private func setModeSingle() {
+        _ = runBridgeNeeded(args: ["config", "set-mode", "single"])
+    }
+    @objc private func setModeMulti() {
+        _ = runBridgeNeeded(args: ["config", "set-mode", "multi"])
+    }
+
+    // MARK: - Sources submenu (per-AI toggles)
+
+    private func makeSourcesItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Sources", action: nil, keyEquivalent: "")
+        let sub = NSMenu(title: "Sources")
+        sub.autoenablesItems = false
+
+        let sources = state?.sources ?? []
+        if sources.isEmpty {
+            let empty = NSMenuItem(title: "(no sources configured)",
+                                    action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            sub.addItem(empty)
+        } else {
+            for src in sources {
+                let title = "\(src.icon)  \(src.label)"
+                let it = NSMenuItem(title: title,
+                                    action: #selector(toggleSource(_:)),
+                                    keyEquivalent: "")
+                it.target = self
+                it.representedObject = src.id
+                it.state = src.enabled ? .on : .off
+                sub.addItem(it)
+            }
+        }
+
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func toggleSource(_ sender: NSMenuItem) {
+        guard let sid = sender.representedObject as? String else { return }
+        _ = runBridgeNeeded(args: ["config", "toggle-source", sid])
+    }
+
+    // MARK: - Pets submenu (pet pack picker per source — multi mode only)
+
+    private func makePetsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Pet for source", action: nil, keyEquivalent: "")
+        let sub = NSMenu(title: "Pet for source")
+        sub.autoenablesItems = false
+
+        let sources = (state?.sources ?? []).filter { $0.enabled }
+        if sources.isEmpty {
+            let empty = NSMenuItem(title: "(enable a source first)",
+                                    action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            sub.addItem(empty)
+        } else {
+            for src in sources {
+                sub.addItem(makeSinglePetPickerItem(for: src))
+            }
+        }
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func makeSinglePetPickerItem(for src: BridgeState.SourceState) -> NSMenuItem {
+        let parent = NSMenuItem(title: "\(src.icon)  \(src.label)",
+                                action: nil, keyEquivalent: "")
+        let sub = NSMenu(title: src.label)
+        sub.autoenablesItems = false
+
+        if pets.isEmpty {
+            let empty = NSMenuItem(title: "(no pet packs installed)",
+                                    action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            sub.addItem(empty)
+        } else {
+            for pet in pets {
+                let it = NSMenuItem(title: pet.displayName,
+                                    action: #selector(pickPetForSource(_:)),
+                                    keyEquivalent: "")
+                it.target = self
+                it.representedObject = ["source": src.id, "pet": pet.path]
+                if let current = src.petDir, current == pet.path {
+                    it.state = .on
+                }
+                sub.addItem(it)
+            }
+        }
+
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func pickPetForSource(_ sender: NSMenuItem) {
+        guard let dict = sender.representedObject as? [String: String],
+              let sid = dict["source"],
+              let pet = dict["pet"] else { return }
+        _ = runBridgeNeeded(args: ["config", "set-source-pet", sid, pet])
+    }
+
+    // MARK: - State refresh from JSON
 
     // MARK: - State refresh
 
@@ -129,6 +306,11 @@ final class OpenPetsBridgeSubmenu: NSObject {
     private func refreshNow() {
         let installed = (bridgeBinaryPath() != nil)
         let running = bridgeIsRunning()
+
+        if installed {
+            loadState()
+            loadPets()
+        }
 
         if !installed {
             statusItem.title = "Bridge: not installed"
@@ -330,5 +512,97 @@ final class OpenPetsBridgeSubmenu: NSObject {
         alert.informativeText = body
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    // MARK: - Bridge command + state load
+
+    /// Run `openpets-bridge <args>` and immediately refresh the cached state
+    /// and rebuild the submenu so checkmarks update without the user having
+    /// to re-open the menu.
+    @discardableResult
+    private func runBridgeNeeded(args: [String]) -> String {
+        guard let bin = bridgeBinaryPath() else { return "" }
+        let output = runBridge(bin: bin, args: args)
+        refreshNow()
+        if let sub = submenuRef {
+            rebuildSubmenu(sub)
+        }
+        return output
+    }
+
+    /// Call `openpets-bridge config show` and parse the JSON into BridgeState.
+    private func loadState() {
+        guard let bin = bridgeBinaryPath() else { state = nil; return }
+        let raw = runBridge(bin: bin, args: ["config", "show"])
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { state = nil; return }
+
+        let mode = (obj["mode"] as? String) ?? "single"
+        var sources: [BridgeState.SourceState] = []
+        if let srcDict = obj["sources"] as? [String: [String: Any]] {
+            for (sid, raw) in srcDict {
+                let enabled = (raw["enabled"] as? Bool) ?? false
+                let label = (raw["label"] as? String) ?? sid
+                let icon = (raw["icon"] as? String) ?? "•"
+                var petDir: String? = nil
+                if let extra = raw["extra"] as? [String: Any] {
+                    petDir = extra["pet_dir"] as? String ?? extra["pet"] as? String
+                }
+                sources.append(.init(id: sid, label: label, icon: icon,
+                                     enabled: enabled, petDir: petDir))
+            }
+        }
+        // Stable ordering: enabled first, then alphabetical by label
+        sources.sort { (a, b) -> Bool in
+            if a.enabled != b.enabled { return a.enabled }
+            return a.label < b.label
+        }
+        state = BridgeState(mode: mode, sources: sources)
+    }
+
+    /// Call `openpets-bridge list-pets` and parse the plain-text output
+    /// into a list of pet packs for the picker submenu.
+    private func loadPets() {
+        guard let bin = bridgeBinaryPath() else { pets = []; return }
+        let raw = runBridge(bin: bin, args: ["list-pets"])
+        var packs: [BridgePetPack] = []
+        var pendingName: String? = nil
+        // Format from cmd_list_pets:
+        //   "  ✓ Mandalorian  [mandalorian]"
+        //   "      /Users/maciej/Library/Application Support/OpenPets/Pets/mandalorian"
+        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("✓ ") {
+                // strip leading "✓ " and trailing "  [id]"
+                var name = String(trimmed.dropFirst(2))
+                if let bracket = name.range(of: "  [") {
+                    name = String(name[..<bracket.lowerBound])
+                }
+                pendingName = name.trimmingCharacters(in: .whitespaces)
+            } else if let n = pendingName,
+                      trimmed.hasPrefix("/") {
+                packs.append(BridgePetPack(displayName: n, path: trimmed))
+                pendingName = nil
+            }
+        }
+        pets = packs
+    }
+}
+
+// MARK: - NSMenuDelegate (live rebuild on each open)
+
+extension OpenPetsBridgeSubmenu: NSMenuDelegate {
+    nonisolated func menuNeedsUpdate(_ menu: NSMenu) {
+        // menuNeedsUpdate is called on the main thread by AppKit anyway —
+        // just dispatch to MainActor without recapturing `menu` across the
+        // isolation boundary (we reach it through submenuRef instead).
+        Task { @MainActor in
+            self.refreshNow()
+            if let sub = self.submenuRef {
+                self.rebuildSubmenu(sub)
+            }
+        }
     }
 }

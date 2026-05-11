@@ -96,7 +96,31 @@ openpets-bridge run --config /path/to/recipe.toml
 
 ## Configure
 
-Three tiers depending on how much you want to fiddle — full guide in
+**Easiest path: use the tray menu.** Click the 🐾 in your menu bar →
+**Bridge ▸**, and you'll find live toggles for:
+
+* **Mode** — switch between Single (one pet, AI icon per bubble) and
+  Multi (one pet per AI).
+* **Sources** — tick Cowork, Codex, Claude Code on or off without
+  touching any file.
+* **Pet for source** (Multi mode) — pick the sprite a given AI wears,
+  from the pet packs you already have installed.
+
+Each toggle atomically rewrites `~/.config/openpets-bridge/config.toml`
+and restarts the bridge daemon. Comments and your formatting are
+preserved.
+
+You can also do everything from the CLI:
+
+```bash
+openpets-bridge config show                        # JSON dump
+openpets-bridge config set-mode multi              # switch mode
+openpets-bridge config toggle-source claude_code   # on/off
+openpets-bridge config set-source-pet cowork \
+  "/Users/you/Library/Application Support/OpenPets/Pets/mandalorian"
+```
+
+If you'd rather edit TOML directly, the full guide is in
 [**docs/CONFIGURATION.md**](./docs/CONFIGURATION.md):
 
 * **Easy** — install once, never edit anything. Cowork + Codex CLI auto-detected.

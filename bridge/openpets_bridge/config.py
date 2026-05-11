@@ -34,8 +34,11 @@ Layout:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -130,6 +133,139 @@ def write_default(path: Path | None = None) -> Path:
     if not p.exists():
         p.write_text(_DEFAULT_TOML)
     return p
+
+
+# ---------------------------------------------------------------------------
+# Mutation helpers — used by `openpets-bridge config set-*` and by the
+# OpenPets tray "Bridge ▸" submenu. We deliberately do regex-based edits
+# instead of round-tripping through a full TOML AST so we don't clobber the
+# user's comments and formatting on every flip.
+# ---------------------------------------------------------------------------
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", dir=str(path.parent), delete=False, suffix=".tmp"
+    )
+    try:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+    finally:
+        tmp.close()
+    os.replace(tmp.name, path)
+
+
+def _ensure_config_file(path: Path | None = None) -> Path:
+    p = path or DEFAULT_CONFIG_PATH
+    if not p.exists():
+        write_default(p)
+    return p
+
+
+def set_mode(mode: str, path: Path | None = None) -> Path:
+    """Switch [bridge].mode to "single" or "multi"."""
+    if mode not in ("single", "multi"):
+        raise ValueError(f"mode must be 'single' or 'multi', got {mode!r}")
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    new_text, n = re.subn(
+        r'(^\s*mode\s*=\s*)"(single|multi)"',
+        lambda m: f'{m.group(1)}"{mode}"',
+        text, count=1, flags=re.MULTILINE,
+    )
+    if n == 0:
+        # No `mode = "..."` line found — inject under [bridge]
+        new_text = re.sub(
+            r"(\[bridge\]\s*\n)",
+            f'\\1mode = "{mode}"\n',
+            text, count=1,
+        )
+    _atomic_write(p, new_text)
+    return p
+
+
+def toggle_source(source_id: str, path: Path | None = None) -> tuple[Path, bool]:
+    """Flip [sources.<id>].enabled. Returns (path, new_state)."""
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    # Find the [sources.<id>] section and the first `enabled = ...` inside it
+    section_pat = re.compile(
+        rf"(\[sources\.{re.escape(source_id)}\]\s*\n(?:(?!^\[).*\n)*?\s*enabled\s*=\s*)(true|false)",
+        re.MULTILINE,
+    )
+    match = section_pat.search(text)
+    if not match:
+        raise ValueError(f"no [sources.{source_id}] enabled line found in config")
+    current = match.group(2) == "true"
+    new_state = not current
+    new_text = section_pat.sub(
+        lambda m: f"{m.group(1)}{'true' if new_state else 'false'}",
+        text, count=1,
+    )
+    _atomic_write(p, new_text)
+    return p, new_state
+
+
+def set_source_pet(source_id: str, pet_dir: str, socket: str | None = None,
+                    path: Path | None = None) -> Path:
+    """Set [sources.<id>.multi_pet].pet = "<pet_dir>" + socket.
+
+    Used in multi-pet mode to pick which sprite plays the role of a given AI.
+    If the section doesn't exist yet, appends it.
+    """
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    auto_socket = socket or f"/tmp/openpets-{source_id}.sock"
+
+    # Try to replace existing pet = "..." inside [sources.<id>.multi_pet]
+    section_header = f"[sources.{source_id}.multi_pet]"
+    pet_line_pat = re.compile(
+        rf"(\[sources\.{re.escape(source_id)}\.multi_pet\]\s*\n(?:(?!^\[).*\n)*?\s*pet\s*=\s*)\"[^\"]*\"",
+        re.MULTILINE,
+    )
+    if pet_line_pat.search(text):
+        new_text = pet_line_pat.sub(
+            lambda m: f'{m.group(1)}"{pet_dir}"', text, count=1,
+        )
+    else:
+        # Append a fresh section at end of file
+        sep = "" if text.endswith("\n") else "\n"
+        new_text = (
+            text
+            + sep
+            + f'\n{section_header}\n'
+            + f'pet = "{pet_dir}"\n'
+            + f'socket = "{auto_socket}"\n'
+        )
+    _atomic_write(p, new_text)
+    return p
+
+
+def export_json(path: Path | None = None) -> str:
+    """Dump current loaded config as JSON. Consumed by the OpenPets tray
+    "Bridge ▸" submenu to render checkmarks and current values."""
+    cfg = load(path)
+    payload = {
+        "mode": cfg.mode,
+        "poll_interval_s": cfg.poll_interval_s,
+        "push_throttle_s": cfg.push_throttle_s,
+        "auto_clear_after_s": cfg.auto_clear_after_s,
+        "log_path": cfg.log_path,
+        "sources": {
+            sid: {
+                "enabled": s.enabled,
+                "label": s.label,
+                "icon": s.icon,
+                "pet": s.pet,
+                "redact_body": s.redact_body,
+                "extra": s.extra,
+            }
+            for sid, s in cfg.sources.items()
+        },
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 _DEFAULT_TOML = """\

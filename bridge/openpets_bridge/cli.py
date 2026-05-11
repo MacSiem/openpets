@@ -164,6 +164,70 @@ def cmd_list_pets(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    """Inspect or mutate ~/.config/openpets-bridge/config.toml.
+
+    Sub-actions are dispatched on ``args.config_cmd``:
+      show           — dump current config as JSON (used by tray menu)
+      set-mode       — switch [bridge].mode to single|multi
+      toggle-source  — flip [sources.<id>].enabled
+      set-source-pet — set [sources.<id>.multi_pet].pet (+ socket)
+
+    All mutating actions trigger a launchd restart so the daemon reloads.
+    """
+    sub = args.config_cmd
+    if sub == "show":
+        print(bridgeconfig.export_json(getattr(args, "config", None)))
+        return 0
+
+    if sub == "set-mode":
+        p = bridgeconfig.set_mode(args.mode, getattr(args, "config", None))
+        print(f"set [bridge].mode = {args.mode!r} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "toggle-source":
+        try:
+            p, new_state = bridgeconfig.toggle_source(
+                args.source_id, getattr(args, "config", None)
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"set [sources.{args.source_id}].enabled = "
+              f"{'true' if new_state else 'false'} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-source-pet":
+        p = bridgeconfig.set_source_pet(
+            args.source_id, args.pet_dir, args.socket,
+            getattr(args, "config", None),
+        )
+        print(f"set [sources.{args.source_id}.multi_pet].pet "
+              f"= {args.pet_dir!r} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    print(f"unknown config sub-command: {sub}", file=sys.stderr)
+    return 2
+
+
+def _restart_bridge_daemon() -> None:
+    """Best-effort bootout+bootstrap so the bridge picks up new config."""
+    uid = os.getuid()
+    plist = _launchd_plist_path(LAUNCHD_LABEL)
+    if not plist.exists():
+        return  # daemon not installed → nothing to restart
+    os.system(f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL} 2>/dev/null")
+    rc = os.system(
+        f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))} 2>/dev/null"
+    )
+    if rc != 0:
+        print(f"  note: launchd reload returned {rc} — restart manually if needed",
+              file=sys.stderr)
+
+
 def cmd_clear(args) -> int:
     """Clear OpenPets bubbles for tracked threads.
 
@@ -246,6 +310,36 @@ def main(argv: list[str] | None = None) -> int:
     sp_pets = sub.add_parser("list-pets",
                              help="Discover installed OpenPets pet packs")
     sp_pets.set_defaults(func=cmd_list_pets)
+
+    sp_cfg = sub.add_parser("config",
+                            help="Inspect or mutate the bridge config.toml")
+    cfg_sub = sp_cfg.add_subparsers(dest="config_cmd", required=True)
+
+    cfg_show = cfg_sub.add_parser("show",
+                                   help="Dump current config as JSON")
+    cfg_show.add_argument("--config", default=None)
+
+    cfg_mode = cfg_sub.add_parser("set-mode",
+                                   help="Switch single ↔ multi pet mode")
+    cfg_mode.add_argument("mode", choices=["single", "multi"])
+    cfg_mode.add_argument("--config", default=None)
+
+    cfg_tog = cfg_sub.add_parser("toggle-source",
+                                  help="Flip enabled for a source")
+    cfg_tog.add_argument("source_id",
+                         help="cowork | codex_cli | claude_code | …")
+    cfg_tog.add_argument("--config", default=None)
+
+    cfg_pet = cfg_sub.add_parser("set-source-pet",
+                                  help="Pick the pet pack a source wears in multi mode")
+    cfg_pet.add_argument("source_id")
+    cfg_pet.add_argument("pet_dir",
+                         help="Absolute path to a pet pack directory")
+    cfg_pet.add_argument("--socket", default=None,
+                         help="Override socket path (default /tmp/openpets-<id>.sock)")
+    cfg_pet.add_argument("--config", default=None)
+
+    sp_cfg.set_defaults(func=cmd_config)
 
     sp_clear = sub.add_parser("clear",
                               help="Clear OpenPets bubbles for tracked threads")
