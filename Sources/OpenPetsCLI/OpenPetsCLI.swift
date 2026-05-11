@@ -1,5 +1,117 @@
+import AppKit
 import Foundation
 import OpenPetsKit
+
+// MARK: - CLI-side runtime for `openpets run`
+//
+// Standalone hosts (multi-pet mode in openpets-bridge spawns one of these per AI)
+// previously used `OpenPetsHost.run`, which builds an `OpenPetsHostSession` *without*
+// a `contextMenuProvider` — so the right-click context menu on the sprite was empty.
+//
+// We replicate the small amount of glue `OpenPetsHost.run` does (NSApplication +
+// app delegate so termination cleans up the host session) and inject a default
+// CLI-side context menu provider.
+
+@MainActor
+private final class OpenPetsCLIRuntime {
+    static var current: OpenPetsCLIRuntime?
+    let delegate: OpenPetsCLIAppDelegate
+
+    init(delegate: OpenPetsCLIAppDelegate) {
+        self.delegate = delegate
+    }
+}
+
+@MainActor
+private final class OpenPetsCLIAppDelegate: NSObject, NSApplicationDelegate {
+    let session: OpenPetsHostSession
+
+    init(session: OpenPetsHostSession) {
+        self.session = session
+    }
+
+    func applicationWillTerminate(_ notification: Foundation.Notification) {
+        session.stop()
+    }
+}
+
+@MainActor
+enum OpenPetsCLIContextMenu {
+    static func make() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let openApp = NSMenuItem(
+            title: "Open OpenPets…",
+            action: #selector(OpenPetsCLIContextMenuTarget.openApp),
+            keyEquivalent: ""
+        )
+        openApp.target = OpenPetsCLIContextMenuTarget.shared
+        menu.addItem(openApp)
+
+        let openConfig = NSMenuItem(
+            title: "Open Config Folder",
+            action: #selector(OpenPetsCLIContextMenuTarget.openConfig),
+            keyEquivalent: ""
+        )
+        openConfig.target = OpenPetsCLIContextMenuTarget.shared
+        menu.addItem(openConfig)
+
+        let bridgeStatus = NSMenuItem(
+            title: "openpets-bridge: status…",
+            action: #selector(OpenPetsCLIContextMenuTarget.bridgeStatus),
+            keyEquivalent: ""
+        )
+        bridgeStatus.target = OpenPetsCLIContextMenuTarget.shared
+        menu.addItem(bridgeStatus)
+
+        menu.addItem(.separator())
+
+        let quitPet = NSMenuItem(
+            title: "Quit this pet host",
+            action: #selector(OpenPetsCLIContextMenuTarget.quit),
+            keyEquivalent: ""
+        )
+        quitPet.target = OpenPetsCLIContextMenuTarget.shared
+        menu.addItem(quitPet)
+
+        return menu
+    }
+}
+
+@MainActor
+final class OpenPetsCLIContextMenuTarget: NSObject {
+    static let shared = OpenPetsCLIContextMenuTarget()
+
+    @objc func openApp() {
+        let url = URL(fileURLWithPath: "/Applications/OpenPets.app")
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func openConfig() {
+        let cfg = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/openpets", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cfg, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(cfg)
+    }
+
+    @objc func bridgeStatus() {
+        // Best-effort: open the bridge log dir; users see status in the menubar app
+        // and via `openpets-bridge status`. We just make the log accessible.
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/openpets-bridge", isDirectory: true)
+        if FileManager.default.fileExists(atPath: logDir.path) {
+            NSWorkspace.shared.open(logDir)
+        } else {
+            let url = URL(fileURLWithPath: "/Applications/OpenPets.app")
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func quit() {
+        NSApplication.shared.terminate(nil)
+    }
+}
 
 @main
 struct OpenPetsCLI {
@@ -51,7 +163,22 @@ struct OpenPetsCLI {
                 socketPath: socketPath,
                 display: display
             )
-            try OpenPetsHost.run(configuration: configuration)
+
+            // Build a session WITH a context menu provider so that right-click
+            // on the pet sprite shows useful actions even when the host was
+            // spawned from the CLI (e.g. by openpets-bridge in multi-pet mode).
+            let session = OpenPetsHostSession(
+                configuration: configuration,
+                terminatesApplicationOnShutdown: true,
+                contextMenuProvider: { OpenPetsCLIContextMenu.make() }
+            )
+            try session.start()
+            let app = NSApplication.shared
+            let delegate = OpenPetsCLIAppDelegate(session: session)
+            OpenPetsCLIRuntime.current = OpenPetsCLIRuntime(delegate: delegate)
+            app.delegate = delegate
+            app.setActivationPolicy(.accessory)
+            app.run()
 
         case "notify":
             let userConfiguration = try OpenPetsConfiguration.loadOrCreateDefault()

@@ -405,6 +405,10 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(installFromLinkItem)
         }
         menu.addItem(.separator())
+        // Bridge controls — added by the MacSiem fork. Hidden gracefully when
+        // openpets-bridge isn't installed; see OpenPetsBridgeSubmenu.swift.
+        menu.addItem(OpenPetsBridgeSubmenu.shared.makeSubmenuItem())
+        menu.addItem(.separator())
         menu.addItem(items.openConfigItem)
         menu.addItem(items.installCommandLineToolItem)
         menu.addItem(items.setUpAgentsItem)

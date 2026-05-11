@@ -1,0 +1,37 @@
+# openpets-bridge config — copy to ~/.config/openpets-bridge/config.toml
+# (or run `openpets-bridge init` to write defaults).
+
+[bridge]
+mode = "single"
+poll_interval_s = 1.0
+push_throttle_s = 1.5
+
+[sources.cowork]
+enabled = true
+icon = "🤝"
+label = "Cowork"
+# Privacy: when true, bubble shows only tool glyph, never tool inputs.
+redact_body = false
+
+[sources.codex_cli]
+enabled = true
+icon = "🟢"
+label = "Codex"
+redact_body = false
+
+[sources.claude_code]
+enabled = false
+icon = "🟠"
+label = "Claude Code"
+redact_body = false
+
+# ---- Multi-pet example -----------------------------------------------------
+# Uncomment and switch [bridge].mode = "multi" to give each AI its own pet.
+#
+# [sources.cowork.extra]
+# pet_dir = "~/Library/Application Support/OpenPets/Pets/mandalorian"
+# socket = "/tmp/openpets-cowork.sock"
+#
+# [sources.codex_cli.extra]
+# pet_dir = "~/.codex/pets/grogu-kid"
+# socket = "/tmp/openpets-codex.sock"
