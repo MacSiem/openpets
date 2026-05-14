@@ -270,15 +270,28 @@ def cmd_config(args) -> int:
 
 
 def _restart_bridge_daemon() -> None:
-    """Best-effort bootout+bootstrap so the bridge picks up new config."""
+    """Best-effort bootout+bootstrap so the bridge picks up new config.
+
+    launchd needs a short pause after bootout before bootstrap will accept
+    the same label again — otherwise it returns `Bootstrap failed: 5:
+    Input/output error`. We retry once with a longer pause if the first
+    bootstrap fails.
+    """
+    import time
     uid = os.getuid()
     plist = _launchd_plist_path(LAUNCHD_LABEL)
     if not plist.exists():
         return  # daemon not installed → nothing to restart
     os.system(f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL} 2>/dev/null")
+    time.sleep(0.8)  # let launchd actually unload the service
     rc = os.system(
         f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))} 2>/dev/null"
     )
+    if rc != 0:
+        time.sleep(1.0)  # one retry after a longer pause
+        rc = os.system(
+            f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))} 2>/dev/null"
+        )
     if rc != 0:
         print(f"  note: launchd reload returned {rc} — restart manually if needed",
               file=sys.stderr)
