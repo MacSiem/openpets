@@ -7,6 +7,7 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
     private enum TabID: String {
         case display = "display"
         case bridge = "bridge"
+        case sources = "sources"
         case advanced = "advanced"
     }
 
@@ -14,6 +15,7 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
     private let tabView = NSTabView()
     private let displayTab = NSTabViewItem(identifier: TabID.display.rawValue)
     private let bridgeTab = NSTabViewItem(identifier: TabID.bridge.rawValue)
+    private let sourcesTab = NSTabViewItem(identifier: TabID.sources.rawValue)
     private let advancedTab = NSTabViewItem(identifier: TabID.advanced.rawValue)
 
     private let scaleSlider = NSSlider(value: 1.0, minValue: 0.3, maxValue: 1.8, target: nil, action: nil)
@@ -29,6 +31,9 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
     private let autoClearStepper = NSStepper()
     private let autoClearField = NSTextField(string: "")
     private let redactBodyCheckbox = NSButton(checkboxWithTitle: "Redact body", target: nil, action: nil)
+    private let sourcesStack = NSStackView()
+    private var sourceCheckboxes: [String: NSButton] = [:]
+    private var currentSources: [PreferencesSourceState] = []
 
     private let mcpHostField = NSTextField(string: "")
     private let mcpPortStepper = NSStepper()
@@ -67,12 +72,15 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         tabView.tabViewType = .noTabsNoBorder
         displayTab.label = "Display"
         bridgeTab.label = "Bridge"
+        sourcesTab.label = "Sources"
         advancedTab.label = "Advanced"
         tabView.addTabViewItem(displayTab)
         tabView.addTabViewItem(bridgeTab)
+        tabView.addTabViewItem(sourcesTab)
         tabView.addTabViewItem(advancedTab)
         displayTab.view = makeDisplayView()
         bridgeTab.view = makeBridgeView()
+        sourcesTab.view = makeSourcesView()
         advancedTab.view = makeAdvancedView()
 
         let applyButton = NSButton(title: "Apply", target: self, action: #selector(applyPreferences))
@@ -166,6 +174,32 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         ])
     }
 
+    private func makeSourcesView() -> NSView {
+        sourcesStack.orientation = .vertical
+        sourcesStack.alignment = .leading
+        sourcesStack.spacing = 8
+        sourcesStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(sourcesStack)
+        NSLayoutConstraint.activate([
+            sourcesStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            sourcesStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            sourcesStack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            sourcesStack.bottomAnchor.constraint(lessThanOrEqualTo: documentView.bottomAnchor),
+        ])
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        scroll.documentView = documentView
+        NSLayoutConstraint.activate([
+            documentView.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+        return scroll
+    }
+
     private func formStack(rows: [(String, NSView)]) -> NSView {
         let grid = NSGridView()
         grid.translatesAutoresizingMaskIntoConstraints = false
@@ -231,17 +265,84 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         if let sources = obj["sources"] as? [String: [String: Any]] {
             let values = sources.values.compactMap { $0["redact_body"] as? Bool }
             redactBodyCheckbox.state = values.allSatisfy { $0 } && !values.isEmpty ? .on : .off
+            currentSources = sources.map { sid, raw in
+                let discovery = raw["discovery"] as? [String: Any]
+                return PreferencesSourceState(
+                    id: sid,
+                    label: (raw["label"] as? String) ?? sid,
+                    icon: (raw["icon"] as? String) ?? "•",
+                    enabled: (raw["enabled"] as? Bool) ?? false,
+                    installed: (discovery?["installed"] as? Bool) ?? false,
+                    watchPath: discovery?["watch_path"] as? String
+                )
+            }.sorted { lhs, rhs in
+                if lhs.enabled != rhs.enabled { return lhs.enabled }
+                return lhs.label < rhs.label
+            }
+            rebuildSourcesList()
         }
     }
 
     private func updateBridgeVisibility() {
         let installed = bridgeBinaryPath() != nil
         let hasBridgeTab = tabView.tabViewItems.contains { ($0.identifier as? String) == TabID.bridge.rawValue }
+        let hasSourcesTab = tabView.tabViewItems.contains { ($0.identifier as? String) == TabID.sources.rawValue }
         if installed && !hasBridgeTab {
             tabView.insertTabViewItem(bridgeTab, at: 1)
         } else if !installed && hasBridgeTab {
             tabView.removeTabViewItem(bridgeTab)
         }
+        if installed && !hasSourcesTab {
+            tabView.insertTabViewItem(sourcesTab, at: min(2, tabView.numberOfTabViewItems))
+        } else if !installed && hasSourcesTab {
+            tabView.removeTabViewItem(sourcesTab)
+        }
+    }
+
+    func selectSourcesTab() {
+        tabView.selectTabViewItem(withIdentifier: TabID.sources.rawValue)
+    }
+
+    private func rebuildSourcesList() {
+        sourcesStack.arrangedSubviews.forEach { view in
+            sourcesStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        sourceCheckboxes.removeAll()
+        for source in currentSources {
+            let row = makeSourceRow(source)
+            sourcesStack.addArrangedSubview(row)
+        }
+    }
+
+    private func makeSourceRow(_ source: PreferencesSourceState) -> NSView {
+        let checkbox = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
+        checkbox.state = source.enabled ? .on : .off
+        sourceCheckboxes[source.id] = checkbox
+
+        let label = NSTextField(labelWithString: "\(source.icon)  \(source.label)")
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let status = NSTextField(labelWithString: source.installed ? "Installed" : "Not detected")
+        status.textColor = source.installed ? .systemGreen : .secondaryLabelColor
+        status.alignment = .right
+        status.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        var views: [NSView] = [checkbox, label, status]
+        if let watchPath = source.watchPath {
+            let reveal = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealSourceWatchPath(_:)))
+            reveal.bezelStyle = .rounded
+            reveal.toolTip = watchPath
+            views.append(reveal)
+        }
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.widthAnchor.constraint(greaterThanOrEqualToConstant: 460).isActive = true
+        return row
     }
 
     @objc private func scaleSliderChanged() {
@@ -281,6 +382,7 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
                 try runRequiredBridgeCommand(args: ["config", "set-push-throttle", "\(pushField.doubleValue)"])
                 try runRequiredBridgeCommand(args: ["config", "set-auto-clear", "\(autoClearField.doubleValue)"])
                 try runRequiredBridgeCommand(args: ["config", "set-redact-body", redactBodyCheckbox.state == .on ? "on" : "off"])
+                try applySourcePreferences()
             }
             onApply()
         } catch {
@@ -300,12 +402,19 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         NSWorkspace.shared.activateFileViewerSelecting([OpenPetsPaths.defaultConfigurationDirectory])
     }
 
+    @objc private func revealSourceWatchPath(_ sender: NSButton) {
+        guard let path = sender.toolTip else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
     @objc private func selectToolbarTab(_ sender: NSToolbarItem) {
         switch sender.itemIdentifier {
         case .displayPreferences:
             tabView.selectTabViewItem(withIdentifier: TabID.display.rawValue)
         case .bridgePreferences:
             tabView.selectTabViewItem(withIdentifier: TabID.bridge.rawValue)
+        case .sourcesPreferences:
+            tabView.selectTabViewItem(withIdentifier: TabID.sources.rawValue)
         case .advancedPreferences:
             tabView.selectTabViewItem(withIdentifier: TabID.advanced.rawValue)
         default:
@@ -314,14 +423,14 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.displayPreferences, .bridgePreferences, .advancedPreferences]
+        [.displayPreferences, .bridgePreferences, .sourcesPreferences, .advancedPreferences]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         if bridgeBinaryPath() == nil {
             return [.displayPreferences, .advancedPreferences]
         }
-        return [.displayPreferences, .bridgePreferences, .advancedPreferences]
+        return [.displayPreferences, .bridgePreferences, .sourcesPreferences, .advancedPreferences]
     }
 
     func toolbar(
@@ -339,6 +448,9 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         case .bridgePreferences:
             item.label = "Bridge"
             item.image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: "Bridge")
+        case .sourcesPreferences:
+            item.label = "Sources"
+            item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Sources")
         case .advancedPreferences:
             item.label = "Advanced"
             item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Advanced")
@@ -404,11 +516,39 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
+
+    private func applySourcePreferences() throws {
+        let removable = Set(["aider", "gemini_cli", "opencode", "continue_cli", "cline"])
+        for source in currentSources {
+            guard let checkbox = sourceCheckboxes[source.id] else { continue }
+            let desired = checkbox.state == .on
+            if desired == source.enabled {
+                continue
+            }
+            if desired {
+                try runRequiredBridgeCommand(args: ["config", "add-source-preset", source.id])
+                try runRequiredBridgeCommand(args: ["config", "toggle-source", source.id])
+            } else if removable.contains(source.id) {
+                try runRequiredBridgeCommand(args: ["config", "remove-source", source.id])
+            } else {
+                try runRequiredBridgeCommand(args: ["config", "toggle-source", source.id])
+            }
+        }
+    }
 }
 
 private struct BridgeCommandResult {
     var status: Int32
     var output: String
+}
+
+private struct PreferencesSourceState {
+    var id: String
+    var label: String
+    var icon: String
+    var enabled: Bool
+    var installed: Bool
+    var watchPath: String?
 }
 
 private enum OpenPetsPreferencesError: Error, LocalizedError {
@@ -425,5 +565,6 @@ private enum OpenPetsPreferencesError: Error, LocalizedError {
 private extension NSToolbarItem.Identifier {
     static let displayPreferences = NSToolbarItem.Identifier("openpets.preferences.display")
     static let bridgePreferences = NSToolbarItem.Identifier("openpets.preferences.bridge")
+    static let sourcesPreferences = NSToolbarItem.Identifier("openpets.preferences.sources")
     static let advancedPreferences = NSToolbarItem.Identifier("openpets.preferences.advanced")
 }

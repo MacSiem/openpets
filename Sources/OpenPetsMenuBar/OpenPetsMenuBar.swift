@@ -219,6 +219,16 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
     )
     private var preferencesController: OpenPetsPreferencesWindowController?
 
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showPreferencesSourcesTab),
+            name: Notification.Name("OpenPetsPreferencesSourcesTab"),
+            object: nil
+        )
+    }
+
     private struct OpenPetsMenuItems {
         var startStopServerItem: NSMenuItem
         var serverStatusItem: NSMenuItem
@@ -503,6 +513,14 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showPreferences() {
+        presentPreferences(selectSourcesTab: false)
+    }
+
+    @objc private func showPreferencesSourcesTab() {
+        presentPreferences(selectSourcesTab: true)
+    }
+
+    private func presentPreferences(selectSourcesTab: Bool) {
         let controller = preferencesController ?? OpenPetsPreferencesWindowController(
             onApply: { [weak self] in
                 guard let self else { return }
@@ -516,6 +534,9 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         )
         preferencesController = controller
         controller.reload()
+        if selectSourcesTab {
+            controller.selectSourcesTab()
+        }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)

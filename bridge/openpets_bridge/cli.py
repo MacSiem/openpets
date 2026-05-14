@@ -17,6 +17,7 @@ def _find_first_existing(*candidates: Path) -> str | None:
 
 from . import __version__
 from . import config as bridgeconfig
+from .discovery import discover_installed_sources
 from . import orchestrator
 from . import pets as petsmod
 from .openpets_client import OpenPetsClient
@@ -265,8 +266,41 @@ def cmd_config(args) -> int:
         _restart_bridge_daemon()
         return 0
 
+    if sub == "add-source-preset":
+        try:
+            p = bridgeconfig.add_source_preset(args.preset_id, getattr(args, "config", None))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"added [sources.{args.preset_id}] to {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "remove-source":
+        try:
+            p = bridgeconfig.remove_source(args.preset_id, getattr(args, "config", None))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"removed [sources.{args.preset_id}] from {p}")
+        _restart_bridge_daemon()
+        return 0
+
     print(f"unknown config sub-command: {sub}", file=sys.stderr)
     return 2
+
+
+def cmd_discover_sources(args) -> int:
+    """Print a table of source discovery results."""
+    rows = discover_installed_sources()
+    print(f"{'id':<14} {'installed':<9} {'watch_path':<62} last_activity")
+    for sid in sorted(rows):
+        row = rows[sid]
+        installed = "yes" if row["installed"] else "no"
+        watch_path = row["watch_path"] or "-"
+        last_activity = row["last_activity"].isoformat(sep=" ", timespec="seconds") if row["last_activity"] else "-"
+        print(f"{sid:<14} {installed:<9} {watch_path:<62} {last_activity}")
+    return 0
 
 
 def _restart_bridge_daemon() -> None:
@@ -380,6 +414,10 @@ def main(argv: list[str] | None = None) -> int:
                              help="Discover installed OpenPets pet packs")
     sp_pets.set_defaults(func=cmd_list_pets)
 
+    sp_discover = sub.add_parser("discover-sources",
+                                 help="Discover installed AI CLI source presets")
+    sp_discover.set_defaults(func=cmd_discover_sources)
+
     sp_cfg = sub.add_parser("config",
                             help="Inspect or mutate the bridge config.toml")
     cfg_sub = sp_cfg.add_subparsers(dest="config_cmd", required=True)
@@ -445,6 +483,16 @@ def main(argv: list[str] | None = None) -> int:
                                     help="Set redact_body for every configured source")
     cfg_redact.add_argument("state", choices=["on", "off"])
     cfg_redact.add_argument("--config", default=None)
+
+    cfg_add = cfg_sub.add_parser("add-source-preset",
+                                 help="Add a known source preset to config")
+    cfg_add.add_argument("preset_id")
+    cfg_add.add_argument("--config", default=None)
+
+    cfg_remove = cfg_sub.add_parser("remove-source",
+                                    help="Remove a non-builtin source from config")
+    cfg_remove.add_argument("preset_id")
+    cfg_remove.add_argument("--config", default=None)
 
     sp_cfg.set_defaults(func=cmd_config)
 

@@ -29,6 +29,8 @@ struct BridgeState {
         var enabled: Bool
         var muted: Bool
         var petDir: String?       // from extra.pet_dir or multi_pet.pet
+        var installed: Bool
+        var watchPath: String?
     }
 }
 
@@ -91,6 +93,13 @@ final class OpenPetsBridgeSubmenu: NSObject {
         i.target = self
         return i
     }()
+    private lazy var manageCliSourcesItem: NSMenuItem = {
+        let i = NSMenuItem(title: "Manage CLI sources…",
+                           action: #selector(manageCliSources),
+                           keyEquivalent: "")
+        i.target = self
+        return i
+    }()
     private lazy var clearDoneItem: NSMenuItem = {
         let i = NSMenuItem(title: "Clear Done Bubbles",
                            action: #selector(clearDoneBubbles),
@@ -144,6 +153,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
             sub.addItem(.separator())
             sub.addItem(makeModeItem())
             sub.addItem(makeSourcesItem())
+            sub.addItem(manageCliSourcesItem)
             if state?.mode == "multi" {
                 sub.addItem(makePetsItem())
             }
@@ -231,7 +241,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
                                  action: #selector(toggleSource(_:)),
                                  keyEquivalent: "")
         enabled.target = self
-        enabled.representedObject = src.id
+        enabled.representedObject = ["source": src.id, "enabled": src.enabled] as [String: Any]
         enabled.state = src.enabled ? .on : .off
         sub.addItem(enabled)
 
@@ -248,7 +258,12 @@ final class OpenPetsBridgeSubmenu: NSObject {
     }
 
     @objc private func toggleSource(_ sender: NSMenuItem) {
-        guard let sid = sender.representedObject as? String else { return }
+        guard let dict = sender.representedObject as? [String: Any],
+              let sid = dict["source"] as? String,
+              let enabled = dict["enabled"] as? Bool else { return }
+        if !enabled {
+            _ = runBridgeNeeded(args: ["config", "add-source-preset", sid])
+        }
         _ = runBridgeNeeded(args: ["config", "toggle-source", sid])
     }
 
@@ -348,6 +363,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
             openConfigItem.isEnabled = false
             openLogItem.isEnabled = false
             listPetsItem.isEnabled = false
+            manageCliSourcesItem.isEnabled = false
             clearDoneItem.isEnabled = false
             clearAllItem.isEnabled = false
             installItem.isHidden = false
@@ -360,6 +376,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
         openConfigItem.isEnabled = true
         openLogItem.isEnabled = true
         listPetsItem.isEnabled = true
+        manageCliSourcesItem.isEnabled = true
         clearDoneItem.isEnabled = true
         clearAllItem.isEnabled = true
 
@@ -477,6 +494,13 @@ final class OpenPetsBridgeSubmenu: NSObject {
                   body: result.isEmpty ? "(no pet packs found)" : result)
     }
 
+    @objc private func manageCliSources() {
+        NotificationCenter.default.post(
+            name: Notification.Name("OpenPetsPreferencesSourcesTab"),
+            object: nil
+        )
+    }
+
     @objc private func clearDoneBubbles() {
         guard let bin = bridgeBinaryPath() else { return }
         _ = runBridge(bin: bin, args: ["clear", "--done-only"])
@@ -578,8 +602,12 @@ final class OpenPetsBridgeSubmenu: NSObject {
                 if let extra = raw["extra"] as? [String: Any] {
                     petDir = extra["pet_dir"] as? String ?? extra["pet"] as? String
                 }
+                let discovery = raw["discovery"] as? [String: Any]
+                let installed = (discovery?["installed"] as? Bool) ?? false
+                let watchPath = discovery?["watch_path"] as? String
                 sources.append(.init(id: sid, label: label, icon: icon,
-                                     enabled: enabled, muted: muted, petDir: petDir))
+                                     enabled: enabled, muted: muted, petDir: petDir,
+                                     installed: installed, watchPath: watchPath))
             }
         }
         // Stable ordering: enabled first, then alphabetical by label

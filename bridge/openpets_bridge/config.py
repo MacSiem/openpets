@@ -77,7 +77,44 @@ DEFAULT_SOURCES: dict[str, dict] = {
         "icon": "🟠",
         "extra": {},
     },
+    "aider": {
+        "enabled": False,
+        "muted": False,
+        "label": "Aider",
+        "icon": "🦅",
+        "extra": {},
+    },
+    "gemini_cli": {
+        "enabled": False,
+        "muted": False,
+        "label": "Gemini",
+        "icon": "🪷",
+        "extra": {},
+    },
+    "opencode": {
+        "enabled": False,
+        "muted": False,
+        "label": "OpenCode",
+        "icon": "🌊",
+        "extra": {},
+    },
+    "continue_cli": {
+        "enabled": False,
+        "muted": False,
+        "label": "Continue",
+        "icon": "⏩",
+        "extra": {},
+    },
+    "cline": {
+        "enabled": False,
+        "muted": False,
+        "label": "Cline",
+        "icon": "🧬",
+        "extra": {},
+    },
 }
+
+BUILTIN_SOURCES = frozenset({"cowork", "codex_cli", "claude_code"})
 
 
 @dataclass(slots=True)
@@ -169,6 +206,47 @@ def _ensure_config_file(path: Path | None = None) -> Path:
     p = Path(path) if path else DEFAULT_CONFIG_PATH
     if not p.exists():
         write_default(p)
+    return p
+
+
+def _source_block(source_id: str) -> str:
+    defaults = DEFAULT_SOURCES[source_id]
+    return (
+        f"\n[sources.{source_id}]\n"
+        f"enabled = {'true' if defaults['enabled'] else 'false'}\n"
+        f"muted = {'true' if defaults.get('muted', False) else 'false'}\n"
+        f"label = \"{defaults['label']}\"\n"
+        f"icon = \"{defaults['icon']}\"\n"
+        "redact_body = false\n"
+    )
+
+
+def add_source_preset(preset_id: str, path: Path | str | None = None) -> Path:
+    """Add a known [sources.<preset_id>] block if it is missing."""
+    if preset_id not in DEFAULT_SOURCES:
+        raise ValueError(f"unknown source preset: {preset_id}")
+    p = _ensure_config_file(Path(path) if path else None)
+    text = p.read_text()
+    if re.search(rf"^\[sources\.{re.escape(preset_id)}\]$", text, re.MULTILINE):
+        return p
+    sep = "" if text.endswith("\n") else "\n"
+    _atomic_write(p, text + sep + _source_block(preset_id))
+    return p
+
+
+def remove_source(preset_id: str, path: Path | str | None = None) -> Path:
+    """Remove a non-builtin source block and its child sections."""
+    if preset_id in BUILTIN_SOURCES:
+        raise ValueError(f"cannot remove builtin source: {preset_id}")
+    p = _ensure_config_file(Path(path) if path else None)
+    text = p.read_text()
+    section_pat = re.compile(
+        rf"^\[sources\.{re.escape(preset_id)}(?:\.[^\]]+)?\]\n"
+        rf"(?:(?!^\[).*\n?)*",
+        re.MULTILINE,
+    )
+    new_text = section_pat.sub("", text)
+    _atomic_write(p, new_text)
     return p
 
 
@@ -350,6 +428,9 @@ def export_json(path: Path | None = None) -> str:
     """Dump current loaded config as JSON. Consumed by the OpenPets tray
     "Bridge ▸" submenu to render checkmarks and current values."""
     cfg = load(path)
+    from .discovery import discover_installed_sources
+
+    discovery = discover_installed_sources()
     payload = {
         "mode": cfg.mode,
         "poll_interval_s": cfg.poll_interval_s,
@@ -365,6 +446,14 @@ def export_json(path: Path | None = None) -> str:
                 "pet": s.pet,
                 "redact_body": s.redact_body,
                 "extra": s.extra,
+                "discovery": {
+                    "installed": discovery.get(sid, {}).get("installed", False),
+                    "watch_path": discovery.get(sid, {}).get("watch_path"),
+                    "last_activity": (
+                        discovery.get(sid, {}).get("last_activity").isoformat()
+                        if discovery.get(sid, {}).get("last_activity") else None
+                    ),
+                },
             }
             for sid, s in cfg.sources.items()
         },
@@ -412,6 +501,45 @@ muted = false
 label = "Claude Code"
 icon = "🟠"
 redact_body = false
+
+# Optional LLM CLI source presets. They are disabled by default and can be
+# enabled from Preferences ▸ Sources or with:
+#   openpets-bridge config add-source-preset <preset_id>
+#
+# [sources.aider]
+# enabled = false
+# muted = false
+# label = "Aider"
+# icon = "🦅"
+# redact_body = false
+#
+# [sources.gemini_cli]
+# enabled = false
+# muted = false
+# label = "Gemini"
+# icon = "🪷"
+# redact_body = false
+#
+# [sources.opencode]
+# enabled = false
+# muted = false
+# label = "OpenCode"
+# icon = "🌊"
+# redact_body = false
+#
+# [sources.continue_cli]
+# enabled = false
+# muted = false
+# label = "Continue"
+# icon = "⏩"
+# redact_body = false
+#
+# [sources.cline]
+# enabled = false
+# muted = false
+# label = "Cline"
+# icon = "🧬"
+# redact_body = false
 
 # ---- Multi-pet mode (optional) -------------------------------------------
 # When mode = "multi", each enabled source gets its OWN OpenPets host on a

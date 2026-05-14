@@ -18,6 +18,11 @@ from .base import Source, SourceConfig, SourceUpdate
 from .cowork import CoworkSource
 from .codex_cli import CodexCliSource
 from .claude_code import ClaudeCodeSource
+from .aider import AiderSource
+from .gemini_cli import GeminiCliSource
+from .opencode import OpenCodeSource
+from .continue_cli import ContinueCliSource
+from .cline import ClineSource
 
 __all__ = [
     "Source",
@@ -26,6 +31,11 @@ __all__ = [
     "CoworkSource",
     "CodexCliSource",
     "ClaudeCodeSource",
+    "AiderSource",
+    "GeminiCliSource",
+    "OpenCodeSource",
+    "ContinueCliSource",
+    "ClineSource",
     "load_sources",
     "REGISTRY",
 ]
@@ -34,6 +44,11 @@ REGISTRY: Mapping[str, type[Source]] = {
     "cowork": CoworkSource,
     "codex_cli": CodexCliSource,
     "claude_code": ClaudeCodeSource,
+    "aider": AiderSource,
+    "gemini_cli": GeminiCliSource,
+    "opencode": OpenCodeSource,
+    "continue_cli": ContinueCliSource,
+    "cline": ClineSource,
 }
 
 

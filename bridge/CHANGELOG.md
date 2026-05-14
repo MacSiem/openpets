@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.0]
+
+- Added opt-in LLM CLI source presets for Aider, Gemini CLI, OpenCode, Continue, and Cline, with source discovery, config verbs, tray/preference surfacing, and smoke tests.
+
 ## [0.3.1]
 
 - Tray shows `Display ▸` with 5 scale options.

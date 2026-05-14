@@ -36,6 +36,15 @@ Supported sources out of the box:
 | **Cowork**       | `~/Library/Application Support/Claude/local-agent-mode-sessions/.../audit.jsonl` |
 | **Codex CLI**    | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | **Claude Code CLI** | `~/.claude/projects/<encoded-cwd>/<sessionUUID>.jsonl` |
+| **Aider**        | `~/.aider/sessions/*.jsonl` or `.aider.chat.history.md` |
+| **Gemini CLI**   | `~/.config/gemini-cli/sessions/*.jsonl` or `~/.gemini/history/*.jsonl` |
+| **OpenCode**     | `~/.local/share/opencode/sessions/*.jsonl` or `~/.opencode/sessions/*.jsonl` |
+| **Continue CLI** | `~/.continue/sessions/*.json` |
+| **Cline**        | `~/.config/cline/tasks/*.jsonl` or VS Code extension task storage |
+
+The LLM CLI presets are disabled by default. Use `openpets-bridge discover-sources`,
+`openpets-bridge config add-source-preset <preset_id>`, or the native
+Preferences `Sources` tab to detect and enable them.
 
 Two display modes — switchable from the tray menu (no config file edit
 needed):
