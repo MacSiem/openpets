@@ -80,7 +80,7 @@ class SinglePetMode:
     # ------------------------------------------------------------------
     def _handle(self, u: SourceUpdate) -> None:
         cfg = self._configs.get(u.source_id)
-        if cfg is None or not cfg.enabled:
+        if cfg is None or not cfg.enabled or cfg.muted:
             return  # source removed/disabled mid-flight
 
         rec = self._store.get(u.source_id, u.session_id)

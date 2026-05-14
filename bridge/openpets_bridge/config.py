@@ -58,18 +58,21 @@ DEFAULT_CONFIG_PATH = Path.home() / ".config/openpets-bridge/config.toml"
 DEFAULT_SOURCES: dict[str, dict] = {
     "cowork": {
         "enabled": True,
+        "muted": False,
         "label": "Cowork",
         "icon": "🤝",
         "extra": {},
     },
     "codex_cli": {
         "enabled": True,
+        "muted": False,
         "label": "Codex",
         "icon": "🟢",
         "extra": {},
     },
     "claude_code": {
         "enabled": False,  # off by default — many users don't have CLI installed
+        "muted": False,
         "label": "Claude Code",
         "icon": "🟠",
         "extra": {},
@@ -92,13 +95,18 @@ class BridgeConfig:
 
 def _build_source_config(sid: str, raw: dict) -> SourceConfig:
     defaults = DEFAULT_SOURCES.get(sid, {})
+    extra = dict(defaults.get("extra", {}))
+    extra.update(dict(raw.get("extra", {})))
+    if isinstance(raw.get("multi_pet"), dict):
+        extra.update(dict(raw["multi_pet"]))
     return SourceConfig(
         enabled=bool(raw.get("enabled", defaults.get("enabled", False))),
+        muted=bool(raw.get("muted", defaults.get("muted", False))),
         label=str(raw.get("label", defaults.get("label", sid))),
         icon=str(raw.get("icon", defaults.get("icon", "•"))),
         pet=raw.get("pet"),
         redact_body=bool(raw.get("redact_body", defaults.get("redact_body", False))),
-        extra=dict(raw.get("extra", defaults.get("extra", {}))),
+        extra=extra,
     )
 
 
@@ -158,7 +166,7 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 def _ensure_config_file(path: Path | None = None) -> Path:
-    p = path or DEFAULT_CONFIG_PATH
+    p = Path(path) if path else DEFAULT_CONFIG_PATH
     if not p.exists():
         write_default(p)
     return p
@@ -208,6 +216,46 @@ def toggle_source(source_id: str, path: Path | None = None) -> tuple[Path, bool]
     return p, new_state
 
 
+def _replace_or_insert_source_bool(
+    source_id: str,
+    key: str,
+    value: bool,
+    path: Path | None = None,
+) -> Path:
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    section_pat = re.compile(
+        rf"(\[sources\.{re.escape(source_id)}\]\s*\n(?:(?!^\[).*\n)*?)",
+        re.MULTILINE,
+    )
+    section = section_pat.search(text)
+    if not section:
+        raise ValueError(f"no [sources.{source_id}] section found in config")
+
+    value_text = "true" if value else "false"
+    key_pat = re.compile(
+        rf"(\[sources\.{re.escape(source_id)}\]\s*\n(?:(?!^\[).*\n)*?\s*{re.escape(key)}\s*=\s*)(true|false)",
+        re.MULTILINE,
+    )
+    if key_pat.search(text):
+        new_text = key_pat.sub(lambda m: f"{m.group(1)}{value_text}", text, count=1)
+    else:
+        insert_at = section.end(1)
+        new_text = text[:insert_at] + f"{key} = {value_text}\n" + text[insert_at:]
+    _atomic_write(p, new_text)
+    return p
+
+
+def set_source_mute(
+    source_id: str,
+    muted: bool,
+    path: Path | None = None,
+) -> tuple[Path, bool]:
+    """Set [sources.<id>].muted. Returns (path, muted)."""
+    p = _replace_or_insert_source_bool(source_id, "muted", muted, path)
+    return p, muted
+
+
 def set_source_pet(source_id: str, pet_dir: str, socket: str | None = None,
                     path: Path | None = None) -> Path:
     """Set [sources.<id>.multi_pet].pet = "<pet_dir>" + socket.
@@ -243,6 +291,61 @@ def set_source_pet(source_id: str, pet_dir: str, socket: str | None = None,
     return p
 
 
+def _set_bridge_float(key: str, value: float, path: Path | None = None) -> Path:
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    value_text = f"{value:g}"
+    new_text, n = re.subn(
+        rf"(^\s*{re.escape(key)}\s*=\s*)[-+]?[0-9]*\.?[0-9]+",
+        lambda m: f"{m.group(1)}{value_text}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if n == 0:
+        new_text = re.sub(
+            r"(\[bridge\]\s*\n)",
+            f"\\1{key} = {value_text}\n",
+            text,
+            count=1,
+        )
+    _atomic_write(p, new_text)
+    return p
+
+
+def set_poll_interval(value: float, path: Path | None = None) -> Path:
+    """Set [bridge].poll_interval_s."""
+    if value <= 0:
+        raise ValueError("poll_interval_s must be greater than 0")
+    return _set_bridge_float("poll_interval_s", value, path)
+
+
+def set_push_throttle(value: float, path: Path | None = None) -> Path:
+    """Set [bridge].push_throttle_s."""
+    if value < 0:
+        raise ValueError("push_throttle_s must be greater than or equal to 0")
+    return _set_bridge_float("push_throttle_s", value, path)
+
+
+def set_auto_clear_after(value: float, path: Path | None = None) -> Path:
+    """Set [bridge].auto_clear_after_s."""
+    if value < 0:
+        raise ValueError("auto_clear_after_s must be greater than or equal to 0")
+    return _set_bridge_float("auto_clear_after_s", value, path)
+
+
+def set_all_sources_redact_body(redact: bool, path: Path | None = None) -> Path:
+    """Set redact_body for every configured source section."""
+    p = _ensure_config_file(path)
+    text = p.read_text()
+    source_ids = re.findall(r"^\[sources\.([A-Za-z0-9_-]+)\]$", text, re.MULTILINE)
+    if not source_ids:
+        raise ValueError("no [sources.<id>] sections found in config")
+    for source_id in source_ids:
+        _replace_or_insert_source_bool(source_id, "redact_body", redact, p)
+    return p
+
+
 def export_json(path: Path | None = None) -> str:
     """Dump current loaded config as JSON. Consumed by the OpenPets tray
     "Bridge ▸" submenu to render checkmarks and current values."""
@@ -256,6 +359,7 @@ def export_json(path: Path | None = None) -> str:
         "sources": {
             sid: {
                 "enabled": s.enabled,
+                "muted": s.muted,
                 "label": s.label,
                 "icon": s.icon,
                 "pet": s.pet,
@@ -287,6 +391,7 @@ auto_clear_after_s = 0.0
 
 [sources.cowork]
 enabled = true
+muted = false
 label = "Cowork"
 icon = "🤝"
 # Set redact_body = true to never echo tool inputs (file paths, commands,
@@ -296,12 +401,14 @@ redact_body = false
 
 [sources.codex_cli]
 enabled = true
+muted = false
 label = "Codex"
 icon = "🟢"
 redact_body = false
 
 [sources.claude_code]
 enabled = false           # turn on when you use the `claude` CLI
+muted = false
 label = "Claude Code"
 icon = "🟠"
 redact_body = false

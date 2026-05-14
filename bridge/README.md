@@ -102,7 +102,7 @@ openpets-bridge run --config /path/to/recipe.toml
 * **Mode** — switch between Single (one pet, AI icon per bubble) and
   Multi (one pet per AI).
 * **Sources** — tick Cowork, Codex, Claude Code on or off without
-  touching any file.
+  touching any file, or mute one while keeping its daemon source polling.
 * **Pet for source** (Multi mode) — pick the sprite a given AI wears,
   from the pet packs you already have installed.
 
@@ -116,6 +116,7 @@ You can also do everything from the CLI:
 openpets-bridge config show                        # JSON dump
 openpets-bridge config set-mode multi              # switch mode
 openpets-bridge config toggle-source claude_code   # on/off
+openpets-bridge config mute-source cowork          # hide output, keep polling
 openpets-bridge config set-source-pet cowork \
   "/Users/you/Library/Application Support/OpenPets/Pets/mandalorian"
 ```
@@ -136,18 +137,21 @@ mode = "single"            # "single" (one pet) | "multi" (one pet per AI)
 
 [sources.cowork]
 enabled = true
+muted = false                # hide output while keeping the source polled
 icon = "🤝"
 label = "Cowork"
 redact_body = false        # privacy mode (see below)
 
 [sources.codex_cli]
 enabled = true
+muted = false
 icon = "🟢"
 label = "Codex"
 redact_body = false
 
 [sources.claude_code]
 enabled = false            # turn on when you use the `claude` CLI
+muted = false
 icon = "🟠"
 label = "Claude Code"
 redact_body = false

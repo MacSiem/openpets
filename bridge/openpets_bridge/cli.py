@@ -98,7 +98,8 @@ def cmd_status(args) -> int:
     print( "  sources:")
     for sid, sc in cfg.sources.items():
         flag = "ON " if sc.enabled else "off"
-        print(f"    [{flag}] {sid:<14} {sc.icon}  {sc.label}")
+        muted = " muted" if sc.muted else ""
+        print(f"    [{flag}] {sid:<14} {sc.icon}  {sc.label}{muted}")
     client = OpenPetsClient()
     print(f"  openpets ping    : {'pong' if client.ping() else 'NOT REACHABLE — is OpenPets.app running?'}")
     plist = _launchd_plist_path()
@@ -171,6 +172,8 @@ def cmd_config(args) -> int:
       show           — dump current config as JSON (used by tray menu)
       set-mode       — switch [bridge].mode to single|multi
       toggle-source  — flip [sources.<id>].enabled
+      mute-source    — set [sources.<id>].muted = true
+      unmute-source  — set [sources.<id>].muted = false
       set-source-pet — set [sources.<id>.multi_pet].pet (+ socket)
 
     All mutating actions trigger a launchd restart so the daemon reloads.
@@ -199,6 +202,33 @@ def cmd_config(args) -> int:
         _restart_bridge_daemon()
         return 0
 
+    if sub in ("mute-source", "unmute-source"):
+        muted = sub == "mute-source"
+        try:
+            p, new_state = bridgeconfig.set_source_mute(
+                args.source_id, muted, getattr(args, "config", None)
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"set [sources.{args.source_id}].muted = "
+              f"{'true' if new_state else 'false'} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-mute":
+        try:
+            p, new_state = bridgeconfig.set_source_mute(
+                args.source_id, args.state == "on", getattr(args, "config", None)
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"set [sources.{args.source_id}].muted = "
+              f"{'true' if new_state else 'false'} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
     if sub == "set-source-pet":
         p = bridgeconfig.set_source_pet(
             args.source_id, args.pet_dir, args.socket,
@@ -206,6 +236,32 @@ def cmd_config(args) -> int:
         )
         print(f"set [sources.{args.source_id}.multi_pet].pet "
               f"= {args.pet_dir!r} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-poll-interval":
+        p = bridgeconfig.set_poll_interval(args.seconds, getattr(args, "config", None))
+        print(f"set [bridge].poll_interval_s = {args.seconds:g} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-push-throttle":
+        p = bridgeconfig.set_push_throttle(args.seconds, getattr(args, "config", None))
+        print(f"set [bridge].push_throttle_s = {args.seconds:g} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-auto-clear":
+        p = bridgeconfig.set_auto_clear_after(args.seconds, getattr(args, "config", None))
+        print(f"set [bridge].auto_clear_after_s = {args.seconds:g} in {p}")
+        _restart_bridge_daemon()
+        return 0
+
+    if sub == "set-redact-body":
+        p = bridgeconfig.set_all_sources_redact_body(
+            args.state == "on", getattr(args, "config", None)
+        )
+        print(f"set [sources.*].redact_body = {args.state == 'on'} in {p}")
         _restart_bridge_daemon()
         return 0
 
@@ -330,6 +386,24 @@ def main(argv: list[str] | None = None) -> int:
                          help="cowork | codex_cli | claude_code | …")
     cfg_tog.add_argument("--config", default=None)
 
+    cfg_mute = cfg_sub.add_parser("mute-source",
+                                  help="Hide a source's pet output while keeping it polled")
+    cfg_mute.add_argument("source_id",
+                          help="cowork | codex_cli | claude_code | …")
+    cfg_mute.add_argument("--config", default=None)
+
+    cfg_unmute = cfg_sub.add_parser("unmute-source",
+                                    help="Show a muted source again")
+    cfg_unmute.add_argument("source_id",
+                            help="cowork | codex_cli | claude_code | …")
+    cfg_unmute.add_argument("--config", default=None)
+
+    cfg_set_mute = cfg_sub.add_parser("set-mute",
+                                      help="Set source muted state")
+    cfg_set_mute.add_argument("source_id")
+    cfg_set_mute.add_argument("state", choices=["on", "off"])
+    cfg_set_mute.add_argument("--config", default=None)
+
     cfg_pet = cfg_sub.add_parser("set-source-pet",
                                   help="Pick the pet pack a source wears in multi mode")
     cfg_pet.add_argument("source_id")
@@ -338,6 +412,26 @@ def main(argv: list[str] | None = None) -> int:
     cfg_pet.add_argument("--socket", default=None,
                          help="Override socket path (default /tmp/openpets-<id>.sock)")
     cfg_pet.add_argument("--config", default=None)
+
+    cfg_poll = cfg_sub.add_parser("set-poll-interval",
+                                  help="Set bridge poll_interval_s")
+    cfg_poll.add_argument("seconds", type=float)
+    cfg_poll.add_argument("--config", default=None)
+
+    cfg_push = cfg_sub.add_parser("set-push-throttle",
+                                  help="Set bridge push_throttle_s")
+    cfg_push.add_argument("seconds", type=float)
+    cfg_push.add_argument("--config", default=None)
+
+    cfg_clear_after = cfg_sub.add_parser("set-auto-clear",
+                                         help="Set bridge auto_clear_after_s")
+    cfg_clear_after.add_argument("seconds", type=float)
+    cfg_clear_after.add_argument("--config", default=None)
+
+    cfg_redact = cfg_sub.add_parser("set-redact-body",
+                                    help="Set redact_body for every configured source")
+    cfg_redact.add_argument("state", choices=["on", "off"])
+    cfg_redact.add_argument("--config", default=None)
 
     sp_cfg.set_defaults(func=cmd_config)
 

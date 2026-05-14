@@ -165,6 +165,11 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         action: nil,
         keyEquivalent: ""
     )
+    private lazy var displayItem = NSMenuItem(
+        title: "Display",
+        action: nil,
+        keyEquivalent: ""
+    )
     private lazy var installPetsItem = NSMenuItem(
         title: "Install pets...",
         action: #selector(openPetsGallery),
@@ -181,6 +186,11 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         title: "Open Config Folder",
         action: #selector(openConfigFolder),
         keyEquivalent: ""
+    )
+    private lazy var preferencesItem = NSMenuItem(
+        title: "Preferences…",
+        action: #selector(showPreferences),
+        keyEquivalent: ","
     )
     private lazy var installCommandLineToolItem = NSMenuItem(
         title: "Install CLI",
@@ -207,6 +217,7 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         action: #selector(quit),
         keyEquivalent: "q"
     )
+    private var preferencesController: OpenPetsPreferencesWindowController?
 
     private struct OpenPetsMenuItems {
         var startStopServerItem: NSMenuItem
@@ -215,8 +226,10 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         var wakeStopPetItem: NSMenuItem
         var callPetItem: NSMenuItem
         var activePetItem: NSMenuItem
+        var displayItem: NSMenuItem
         var installPetsItem: NSMenuItem
         var installFromLinkItem: NSMenuItem?
+        var preferencesItem: NSMenuItem
         var openConfigItem: NSMenuItem
         var installCommandLineToolItem: NSMenuItem
         var setUpAgentsItem: NSMenuItem
@@ -232,6 +245,7 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
                 wakeStopPetItem,
                 callPetItem,
                 installPetsItem,
+                preferencesItem,
                 openConfigItem,
                 installCommandLineToolItem,
                 setUpAgentsItem,
@@ -295,8 +309,10 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
             wakeStopPetItem: wakeStopPetItem,
             callPetItem: callPetItem,
             activePetItem: activePetItem,
+            displayItem: displayItem,
             installPetsItem: installPetsItem,
             installFromLinkItem: installFromLinkItem,
+            preferencesItem: preferencesItem,
             openConfigItem: openConfigItem,
             installCommandLineToolItem: installCommandLineToolItem,
             setUpAgentsItem: setUpAgentsItem,
@@ -348,12 +364,22 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
                 action: nil,
                 keyEquivalent: ""
             ),
+            displayItem: NSMenuItem(
+                title: "Display",
+                action: nil,
+                keyEquivalent: ""
+            ),
             installPetsItem: NSMenuItem(
                 title: "Install pets...",
                 action: #selector(openPetsGallery),
                 keyEquivalent: ""
             ),
             installFromLinkItem: installFromLinkItem,
+            preferencesItem: NSMenuItem(
+                title: "Preferences…",
+                action: #selector(showPreferences),
+                keyEquivalent: ","
+            ),
             openConfigItem: NSMenuItem(
                 title: "Open Config Folder",
                 action: #selector(openConfigFolder),
@@ -400,6 +426,7 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(items.wakeStopPetItem)
         menu.addItem(items.callPetItem)
         menu.addItem(items.activePetItem)
+        menu.addItem(items.displayItem)
         menu.addItem(items.installPetsItem)
         if let installFromLinkItem = items.installFromLinkItem {
             menu.addItem(installFromLinkItem)
@@ -409,6 +436,7 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         // openpets-bridge isn't installed; see OpenPetsBridgeSubmenu.swift.
         menu.addItem(OpenPetsBridgeSubmenu.shared.makeSubmenuItem())
         menu.addItem(.separator())
+        menu.addItem(items.preferencesItem)
         menu.addItem(items.openConfigItem)
         menu.addItem(items.installCommandLineToolItem)
         menu.addItem(items.setUpAgentsItem)
@@ -474,6 +502,25 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         }
     }
 
+    @objc private func showPreferences() {
+        let controller = preferencesController ?? OpenPetsPreferencesWindowController(
+            onApply: { [weak self] in
+                guard let self else { return }
+                self.reloadConfiguration()
+                if self.petSession?.isRunning == true {
+                    self.stopPet()
+                    try? self.wakePet()
+                }
+                self.refreshMenu()
+            }
+        )
+        preferencesController = controller
+        controller.reload()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     @objc private func openPetsGallery() {
         guard let url = URL(string: "https://openpets.sh/gallery") else {
             return
@@ -526,6 +573,27 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
             refreshMenu()
         } catch {
             showError("Could not switch pet", detail: error.localizedDescription)
+        }
+    }
+
+    @objc private func selectDisplayScale(_ sender: NSMenuItem) {
+        guard let scale = sender.representedObject as? Double else {
+            return
+        }
+
+        do {
+            var updatedConfiguration = try OpenPetsConfiguration.loadOrCreateDefault()
+            updatedConfiguration.display.scale = CGFloat(scale)
+            try updatedConfiguration.save()
+            configuration = updatedConfiguration
+            let shouldRestart = petSession?.isRunning == true
+            if shouldRestart {
+                stopPet()
+                try wakePet()
+            }
+            refreshMenu()
+        } catch {
+            showError("Could not update display scale", detail: error.localizedDescription)
         }
     }
 
@@ -868,6 +936,7 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         items.serverStatusItem.title = "Server Status: \(mcpState.label)"
         items.wakeStopPetItem.title = petSession?.isRunning == true ? "Stop Pet" : "Wake Pet"
         refreshPetMenu(items.activePetItem)
+        refreshDisplayMenu(items.displayItem)
     }
 
     private func refreshPetMenu(_ activePetItem: NSMenuItem) {
@@ -882,6 +951,27 @@ final class OpenPetsMenuBarController: NSObject, NSMenuDelegate {
         }
         activePetItem.submenu = menu
         activePetItem.title = "Active Pet: \(pets.first { $0.id == configuration.activePetID }?.displayName ?? "Starcorn")"
+    }
+
+    private func refreshDisplayMenu(_ displayItem: NSMenuItem) {
+        let menu = NSMenu()
+        let scales: [(String, Double)] = [
+            ("0.5×", 0.5),
+            ("0.7×", 0.7),
+            ("1.0×", 1.0),
+            ("1.2×", 1.2),
+            ("1.5×", 1.5),
+        ]
+        let currentScale = Double(configuration.display.scale)
+        for (title, scale) in scales {
+            let item = NSMenuItem(title: title, action: #selector(selectDisplayScale(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scale
+            item.state = abs(currentScale - scale) < 0.01 ? .on : .off
+            menu.addItem(item)
+        }
+        displayItem.submenu = menu
+        displayItem.title = "Display"
     }
 
     private func showStartupPetGreeting() {

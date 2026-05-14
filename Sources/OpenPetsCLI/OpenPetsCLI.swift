@@ -16,9 +16,13 @@ import OpenPetsKit
 private final class OpenPetsCLIRuntime {
     static var current: OpenPetsCLIRuntime?
     let delegate: OpenPetsCLIAppDelegate
+    let sourceID: String?
+    let instanceID: String?
 
-    init(delegate: OpenPetsCLIAppDelegate) {
+    init(delegate: OpenPetsCLIAppDelegate, sourceID: String?, instanceID: String?) {
         self.delegate = delegate
+        self.sourceID = sourceID
+        self.instanceID = instanceID
     }
 }
 
@@ -40,13 +44,14 @@ enum OpenPetsCLIContextMenu {
     static func make() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        let target = OpenPetsCLIContextMenuTarget.shared
 
         let openApp = NSMenuItem(
             title: "Open OpenPets…",
             action: #selector(OpenPetsCLIContextMenuTarget.openApp),
             keyEquivalent: ""
         )
-        openApp.target = OpenPetsCLIContextMenuTarget.shared
+        openApp.target = target
         menu.addItem(openApp)
 
         let openConfig = NSMenuItem(
@@ -54,7 +59,7 @@ enum OpenPetsCLIContextMenu {
             action: #selector(OpenPetsCLIContextMenuTarget.openConfig),
             keyEquivalent: ""
         )
-        openConfig.target = OpenPetsCLIContextMenuTarget.shared
+        openConfig.target = target
         menu.addItem(openConfig)
 
         let bridgeStatus = NSMenuItem(
@@ -62,19 +67,97 @@ enum OpenPetsCLIContextMenu {
             action: #selector(OpenPetsCLIContextMenuTarget.bridgeStatus),
             keyEquivalent: ""
         )
-        bridgeStatus.target = OpenPetsCLIContextMenuTarget.shared
+        bridgeStatus.target = target
         menu.addItem(bridgeStatus)
 
         menu.addItem(.separator())
 
+        let display = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
+        display.submenu = makeDisplayMenu(target: target)
+        menu.addItem(display)
+
+        let hideTitle = target.isPetHidden ? "Show this pet" : "Hide this pet (until restart)"
+        let hidePet = NSMenuItem(
+            title: hideTitle,
+            action: #selector(OpenPetsCLIContextMenuTarget.togglePetVisibility),
+            keyEquivalent: ""
+        )
+        hidePet.target = target
+        menu.addItem(hidePet)
+
+        let switchPet = NSMenuItem(title: "Switch pet pack", action: nil, keyEquivalent: "")
+        switchPet.submenu = makePetPackMenu(target: target)
+        menu.addItem(switchPet)
+
+        let openBridge = NSMenuItem(
+            title: "Open Bridge submenu…",
+            action: #selector(OpenPetsCLIContextMenuTarget.openBridgeSubmenu),
+            keyEquivalent: ""
+        )
+        openBridge.target = target
+        menu.addItem(openBridge)
+
+        menu.addItem(.separator())
+
+        let instanceSuffix = OpenPetsCLIRuntime.current?.instanceID.map { " (\($0.prefix(8)))" } ?? ""
         let quitPet = NSMenuItem(
-            title: "Quit this pet host",
+            title: "Quit this pet host\(instanceSuffix)",
             action: #selector(OpenPetsCLIContextMenuTarget.quit),
             keyEquivalent: ""
         )
-        quitPet.target = OpenPetsCLIContextMenuTarget.shared
+        quitPet.target = target
         menu.addItem(quitPet)
 
+        return menu
+    }
+
+    private static func makeDisplayMenu(target: OpenPetsCLIContextMenuTarget) -> NSMenu {
+        let menu = NSMenu(title: "Display")
+        menu.autoenablesItems = false
+        let configuration = (try? OpenPetsConfiguration.loadOrCreateDefault()) ?? OpenPetsConfiguration()
+        let currentScale = Double(configuration.display.scale)
+        for (title, scale) in [("0.5×", 0.5), ("0.7×", 0.7), ("1.0×", 1.0), ("1.2×", 1.2), ("1.5×", 1.5)] {
+            let item = NSMenuItem(
+                title: title,
+                action: #selector(OpenPetsCLIContextMenuTarget.setDisplayScale(_:)),
+                keyEquivalent: ""
+            )
+            item.target = target
+            item.representedObject = scale
+            item.state = abs(currentScale - scale) < 0.01 ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private static func makePetPackMenu(target: OpenPetsCLIContextMenuTarget) -> NSMenu {
+        let menu = NSMenu(title: "Switch pet pack")
+        menu.autoenablesItems = false
+        guard OpenPetsCLIRuntime.current?.sourceID != nil else {
+            let item = NSMenuItem(title: "(source unknown)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return menu
+        }
+
+        let packs = target.installedPetPacks()
+        if packs.isEmpty {
+            let item = NSMenuItem(title: "(no pet packs installed)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return menu
+        }
+
+        for pack in packs {
+            let item = NSMenuItem(
+                title: pack.displayName,
+                action: #selector(OpenPetsCLIContextMenuTarget.switchPetPack(_:)),
+                keyEquivalent: ""
+            )
+            item.target = target
+            item.representedObject = pack.path
+            menu.addItem(item)
+        }
         return menu
     }
 }
@@ -82,6 +165,8 @@ enum OpenPetsCLIContextMenu {
 @MainActor
 final class OpenPetsCLIContextMenuTarget: NSObject {
     static let shared = OpenPetsCLIContextMenuTarget()
+    private(set) var isPetHidden = false
+    private var restoreStatusItem: NSStatusItem?
 
     @objc func openApp() {
         let url = URL(fileURLWithPath: "/Applications/OpenPets.app")
@@ -108,8 +193,150 @@ final class OpenPetsCLIContextMenuTarget: NSObject {
         }
     }
 
+    @objc func togglePetVisibility() {
+        guard let window = NSApp.windows.first else {
+            return
+        }
+        if isPetHidden {
+            window.orderFrontRegardless()
+            isPetHidden = false
+            if let restoreStatusItem {
+                NSStatusBar.system.removeStatusItem(restoreStatusItem)
+                self.restoreStatusItem = nil
+            }
+        } else {
+            window.orderOut(nil)
+            isPetHidden = true
+            installRestoreStatusItem()
+        }
+    }
+
+    @objc func openBridgeSubmenu() {
+        let url = URL(fileURLWithPath: "/Applications/OpenPets.app")
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func setDisplayScale(_ sender: NSMenuItem) {
+        guard let scale = sender.representedObject as? Double else {
+            return
+        }
+        do {
+            var configuration = try OpenPetsConfiguration.loadOrCreateDefault()
+            configuration.display.scale = CGFloat(scale)
+            try configuration.save()
+            if OpenPetsCLIRuntime.current?.sourceID != nil {
+                restartBridgeDaemon()
+            }
+            NSApplication.shared.terminate(nil)
+        } catch {
+            FileHandle.standardError.write(Data("openpets: could not save display scale: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    @objc func switchPetPack(_ sender: NSMenuItem) {
+        guard let sourceID = OpenPetsCLIRuntime.current?.sourceID,
+              let petPath = sender.representedObject as? String else {
+            return
+        }
+        _ = runBridge(args: ["config", "set-source-pet", sourceID, petPath])
+        NSApplication.shared.terminate(nil)
+    }
+
     @objc func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    struct PetPack {
+        var displayName: String
+        var path: String
+    }
+
+    func installedPetPacks() -> [PetPack] {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OpenPets/Pets", isDirectory: true)
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return children.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return nil
+            }
+            return PetPack(displayName: url.lastPathComponent, path: url.path)
+        }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    private func runBridge(args: [String]) -> String {
+        let candidates = [
+            "/opt/homebrew/bin/openpets-bridge",
+            "/usr/local/bin/openpets-bridge",
+            (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/openpets-bridge"),
+        ]
+        guard let bin = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return ""
+        }
+        let task = Process()
+        task.launchPath = bin
+        task.arguments = args
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = out
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return ""
+        }
+        return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+
+    private func installRestoreStatusItem() {
+        if restoreStatusItem != nil {
+            return
+        }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "pawprint.fill", accessibilityDescription: "Show OpenPets pet")
+        let menu = NSMenu()
+        let show = NSMenuItem(
+            title: "Show this pet",
+            action: #selector(togglePetVisibility),
+            keyEquivalent: ""
+        )
+        show.target = self
+        menu.addItem(show)
+        item.menu = menu
+        restoreStatusItem = item
+    }
+
+    private func restartBridgeDaemon() {
+        let label = "sh.openpets.bridge"
+        let uid = getuid()
+        let plist = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        guard FileManager.default.fileExists(atPath: plist) else {
+            return
+        }
+        _ = runProcess(path: "/bin/launchctl", args: ["bootout", "gui/\(uid)/\(label)"])
+        _ = runProcess(path: "/bin/launchctl", args: ["bootstrap", "gui/\(uid)", plist])
+    }
+
+    @discardableResult
+    private func runProcess(path: String, args: [String]) -> Int32 {
+        let task = Process()
+        task.launchPath = path
+        task.arguments = args
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            return task.terminationStatus
+        } catch {
+            return -1
+        }
     }
 }
 
@@ -170,12 +397,17 @@ struct OpenPetsCLI {
             let session = OpenPetsHostSession(
                 configuration: configuration,
                 terminatesApplicationOnShutdown: true,
+                // TODO: duplicate spawn UI in Preferences.
                 contextMenuProvider: { OpenPetsCLIContextMenu.make() }
             )
             try session.start()
             let app = NSApplication.shared
             let delegate = OpenPetsCLIAppDelegate(session: session)
-            OpenPetsCLIRuntime.current = OpenPetsCLIRuntime(delegate: delegate)
+            OpenPetsCLIRuntime.current = OpenPetsCLIRuntime(
+                delegate: delegate,
+                sourceID: ProcessInfo.processInfo.environment["OPENPETS_BRIDGE_SOURCE_ID"],
+                instanceID: ProcessInfo.processInfo.environment["OPENPETS_INSTANCE_ID"]
+            )
             app.delegate = delegate
             app.setActivationPolicy(.accessory)
             app.run()

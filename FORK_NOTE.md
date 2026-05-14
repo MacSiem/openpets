@@ -73,9 +73,15 @@ Bridge ▸
       ✓ Single pet (icon per bubble)
         Multi-pet (one pet per AI)
   Sources ▸
-      ✓ 🤝  Cowork
-      ✓ 🟢  Codex
-        🟠  Claude Code
+      🤝 Cowork ▸
+          ✓ Enabled
+            Mute (hide sprite, keep daemon listening)
+      🟢 Codex ▸
+          ✓ Enabled
+            Mute (hide sprite, keep daemon listening)
+      🟠 Claude Code ▸
+            Enabled
+            Mute (hide sprite, keep daemon listening)
   Pet for source ▸                 (multi mode only)
       🤝 Cowork ▸  Mandalorian / Starcorn / …
       🟢 Codex  ▸  Grogu Kid / …
@@ -92,14 +98,24 @@ Each toggle/pick atomically rewrites `~/.config/openpets-bridge/config.toml`
 and restarts the bridge daemon. Comments and formatting in the user's
 config are preserved.
 
+The main tray also adds **Display ▸** scale choices (`0.5×`, `0.7×`,
+`1.0×`, `1.2×`, `1.5×`) and **Preferences…**. Preferences provides three
+native tabs for OpenPets display settings, bridge mode/throttle/privacy
+settings, and advanced MCP/socket/config-folder settings.
+
 ### 3. Right-click on CLI-spawned sprites (Swift)
 
 [`Sources/OpenPetsCLI/OpenPetsCLI.swift`](./Sources/OpenPetsCLI/OpenPetsCLI.swift)
 — `openpets run` now uses `OpenPetsHostSession` with a
 `contextMenuProvider`, so multi-pet hosts spawned by `openpets-bridge`
 get a right-click context menu on the sprite ("Open OpenPets", "Open
-Config", "Quit this pet host"). The upstream behavior of `OpenPetsHost.run`
-(used by the menubar's "Wake Pet") is unchanged.
+Config", "Display", "Hide this pet", "Switch pet pack", "Open Bridge
+submenu", and "Quit this pet host"). Bridge-spawned hosts receive
+`OPENPETS_BRIDGE_SOURCE_ID` and `OPENPETS_INSTANCE_ID`; the latter appears
+as an 8-character suffix in the Quit menu item so duplicate-spawn
+groundwork is available without changing the upstream OpenPetsKit API.
+The upstream behavior of `OpenPetsHost.run` (used by the menubar's
+"Wake Pet") is unchanged.
 
 ## Quickstart
 

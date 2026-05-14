@@ -73,7 +73,7 @@ class MultiPetMode:
     def _spawn_hosts(self) -> None:
         bin_path = _resolve_binary()
         for sid, cfg in self._configs.items():
-            if not cfg.enabled:
+            if not cfg.enabled or cfg.muted:
                 continue
             extra = cfg.extra or {}
             pet_dir = extra.get("pet_dir") or extra.get("pet")
@@ -107,13 +107,16 @@ class MultiPetMode:
                     pass
 
             args = [bin_path, "run", "--pet", pet_path, "--socket", socket_path]
+            instance_id = str(uuid.uuid4())
             log.info("multi-pet: spawning %s → %s", sid, shlex.join(args))
             try:
                 proc = subprocess.Popen(
                     args,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env={**os.environ,
-                         "PATH": "/opt/homebrew/bin:" + os.environ.get("PATH", "")},
+                         "PATH": "/opt/homebrew/bin:" + os.environ.get("PATH", ""),
+                         "OPENPETS_BRIDGE_SOURCE_ID": sid,
+                         "OPENPETS_INSTANCE_ID": instance_id},
                 )
             except Exception as e:  # noqa: BLE001
                 log.error("multi-pet: failed to spawn %s host: %s", sid, e)

@@ -27,6 +27,7 @@ struct BridgeState {
         var label: String
         var icon: String
         var enabled: Bool
+        var muted: Bool
         var petDir: String?       // from extra.pet_dir or multi_pet.pet
     }
 }
@@ -211,16 +212,36 @@ final class OpenPetsBridgeSubmenu: NSObject {
             sub.addItem(empty)
         } else {
             for src in sources {
-                let title = "\(src.icon)  \(src.label)"
-                let it = NSMenuItem(title: title,
-                                    action: #selector(toggleSource(_:)),
-                                    keyEquivalent: "")
-                it.target = self
-                it.representedObject = src.id
-                it.state = src.enabled ? .on : .off
-                sub.addItem(it)
+                sub.addItem(makeSourceControlsItem(for: src))
             }
         }
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func makeSourceControlsItem(for src: BridgeState.SourceState) -> NSMenuItem {
+        let parent = NSMenuItem(title: "\(src.icon)  \(src.label)",
+                                action: nil,
+                                keyEquivalent: "")
+        let sub = NSMenu(title: src.label)
+        sub.autoenablesItems = false
+
+        let enabled = NSMenuItem(title: "Enabled",
+                                 action: #selector(toggleSource(_:)),
+                                 keyEquivalent: "")
+        enabled.target = self
+        enabled.representedObject = src.id
+        enabled.state = src.enabled ? .on : .off
+        sub.addItem(enabled)
+
+        let muted = NSMenuItem(title: "Mute (hide sprite, keep daemon listening)",
+                               action: #selector(toggleSourceMute(_:)),
+                               keyEquivalent: "")
+        muted.target = self
+        muted.representedObject = ["source": src.id, "muted": !src.muted] as [String: Any]
+        muted.state = src.muted ? .on : .off
+        sub.addItem(muted)
 
         parent.submenu = sub
         return parent
@@ -229,6 +250,13 @@ final class OpenPetsBridgeSubmenu: NSObject {
     @objc private func toggleSource(_ sender: NSMenuItem) {
         guard let sid = sender.representedObject as? String else { return }
         _ = runBridgeNeeded(args: ["config", "toggle-source", sid])
+    }
+
+    @objc private func toggleSourceMute(_ sender: NSMenuItem) {
+        guard let dict = sender.representedObject as? [String: Any],
+              let sid = dict["source"] as? String,
+              let muted = dict["muted"] as? Bool else { return }
+        _ = runBridgeNeeded(args: ["config", "set-mute", sid, muted ? "on" : "off"])
     }
 
     // MARK: - Pets submenu (pet pack picker per source — multi mode only)
@@ -543,6 +571,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
         if let srcDict = obj["sources"] as? [String: [String: Any]] {
             for (sid, raw) in srcDict {
                 let enabled = (raw["enabled"] as? Bool) ?? false
+                let muted = (raw["muted"] as? Bool) ?? false
                 let label = (raw["label"] as? String) ?? sid
                 let icon = (raw["icon"] as? String) ?? "•"
                 var petDir: String? = nil
@@ -550,7 +579,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
                     petDir = extra["pet_dir"] as? String ?? extra["pet"] as? String
                 }
                 sources.append(.init(id: sid, label: label, icon: icon,
-                                     enabled: enabled, petDir: petDir))
+                                     enabled: enabled, muted: muted, petDir: petDir))
             }
         }
         // Stable ordering: enabled first, then alphabetical by label
