@@ -240,18 +240,83 @@ That's the default body. Set `redact_body = true` for that source.
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/sh.openpets.bridge.plist`.
 To uninstall completely: `openpets-bridge uninstall && pipx uninstall openpets-bridge`.
 
-## Adding a source
+## Adding your own LLM
 
-Built-in sources live in `openpets_bridge/sources/`. To support a new
-agent, subclass `Source`, set the `id`, implement `poll()` to yield
-`SourceUpdate` snapshots, and register it in `sources/__init__.py`. PRs
-welcome.
+You don't have to write any Python — most LLM CLIs already persist their
+sessions as JSON-lines files, and the bridge ships a config-driven
+`GenericJsonlSource` that reads them directly.
+
+### Minimal example — Ollama
+
+Add this block to `~/.config/openpets-bridge/config.toml`:
+
+```toml
+[sources.ollama]
+enabled = true
+label   = "Ollama"
+icon    = "🦙"
+
+[sources.ollama.extra]
+type     = "generic_jsonl"
+roots    = ["~/Library/Application Support/ollama/sessions"]
+patterns = ["*.jsonl"]
+```
+
+Then `openpets-bridge config show` to confirm, and restart the daemon:
+`launchctl kickstart -k gui/$(id -u)/sh.openpets.bridge`. New JSONL
+records appended to any file under `roots` will surface as pet bubbles.
+
+### How the mapping works (zero-config defaults)
+
+The bridge looks at each new JSONL record and applies these heuristics
+(in order):
+
+1. Record has a `tool_calls` / `parts[tool]` / `tool_invocations` field
+   → status **running** (the tool's name is shown in the bubble).
+2. `role` is `user` / `ask` / `input` → status **waiting** (the pet
+   shows "⌛ Waiting").
+3. `role` is `assistant` → status **done** (the bubble shows the
+   assistant's text reply, truncated to one line).
+4. `role` is `error` / `failed` → status **failed**.
+5. Anything else → status **message**.
+
+That works out-of-the-box for: Ollama, llamafile, vLLM chat logs, any
+OpenAI-compatible JSON streams persisted to disk, plus most homegrown
+agent loops.
+
+### Custom role mapping
+
+If your tool uses a different field name or non-standard role labels,
+override them in `extra`:
+
+```toml
+[sources.my_homegrown_agent.extra]
+type     = "generic_jsonl"
+roots    = ["~/dev/agent-logs"]
+patterns = ["run-*.jsonl"]
+
+role_field    = "speaker"             # default: "role" or "type"
+running_roles = ["thinking", "tool"]
+done_roles    = ["agent", "model"]
+waiting_roles = ["human", "user"]
+failed_roles  = ["error"]
+```
+
+### When `generic_jsonl` isn't enough
+
+If your tool writes a really custom format (binary, multi-line records,
+nested JSON-in-text, …), drop a Python module into
+`bridge/openpets_bridge/sources/`, subclass
+`openpets_bridge.sources.base.Source`, implement `poll()` to yield
+`SourceUpdate` snapshots, and add it to the `REGISTRY` in
+`sources/__init__.py`. The eight built-in sources are short worked
+examples (≤ 200 lines each). PRs welcome.
 
 ## Acknowledgements
 
 * [alterhq/openpets](https://github.com/alterhq/openpets) — the native
   macOS pet host and the rich `notify` API this whole project depends on.
-* [openpets.dev](https://openpets.dev) — pet packs and the canonical
+* [openpets.sh](https://openpets.sh/gallery) — pet packs and the canonical
   spritesheet format.
 
 ## License

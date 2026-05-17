@@ -46,6 +46,12 @@ The LLM CLI presets are disabled by default. Use `openpets-bridge discover-sourc
 `openpets-bridge config add-source-preset <preset_id>`, or the native
 Preferences `Sources` tab to detect and enable them.
 
+**Adding your own LLM** — for any tool not listed above, the bridge ships a
+config-only `generic_jsonl` source type. Drop a `[sources.<my_id>]` block
+into `~/.config/openpets-bridge/config.toml` with `extra.type =
+"generic_jsonl"` and the path(s) to watch. No Python required. Full guide:
+[`bridge/README.md`](./bridge/README.md#adding-your-own-llm).
+
 Two display modes — switchable from the tray menu (no config file edit
 needed):
 
@@ -107,10 +113,22 @@ Each toggle/pick atomically rewrites `~/.config/openpets-bridge/config.toml`
 and restarts the bridge daemon. Comments and formatting in the user's
 config are preserved.
 
-The main tray also adds **Display ▸** scale choices (`0.5×`, `0.7×`,
-`1.0×`, `1.2×`, `1.5×`) and **Preferences…**. Preferences provides three
-native tabs for OpenPets display settings, bridge mode/throttle/privacy
-settings, and advanced MCP/socket/config-folder settings.
+The main tray also adds **Preferences…** with **four native tabs**:
+
+* **Display** — pet display settings (scale, message area height).
+* **Bridge** — bridge mode, poll/throttle intervals, redact-body toggle.
+* **Sources** — checkbox list of every known LLM CLI preset with
+  Installed / Not detected status from `discover-sources` and a "Reveal
+  in Finder" shortcut to the watch path. Right place to enable Aider,
+  Gemini, OpenCode, Continue, Cline.
+* **Advanced** — MCP host/port, socket path, config folder reveal.
+
+Bridge ▸ also has a top-level **Manage CLI sources…** shortcut that
+opens Preferences directly to the Sources tab.
+
+(Earlier fork builds shipped a separate `Display ▸` scale picker in the
+tray; that's been removed in favour of upstream's per-pet `Scale ▸`
+submenu, which does the same job and integrates with OpenPetsKit 0.2.1.)
 
 ### 3. Right-click on CLI-spawned sprites (Swift)
 
