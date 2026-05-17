@@ -41,7 +41,43 @@ private final class OpenPetsCLIAppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 enum OpenPetsCLIContextMenu {
+    /// Append one diagnostic line per right-click into the bridge's log
+    /// directory. Lets us prove `contextMenuProvider` is actually wired up
+    /// from the spawned host's perspective (QW4 — the "right-click empty
+    /// on multi-pet sprite" issue from 2026-05-11).
+    private static func logInvocation() {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let env = ProcessInfo.processInfo.environment
+        let src = env["OPENPETS_BRIDGE_SOURCE_ID"] ?? "(none)"
+        let inst = env["OPENPETS_INSTANCE_ID"] ?? "(none)"
+        let dir = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Library/Logs/openpets-bridge")
+        try? FileManager.default.createDirectory(atPath: dir,
+                                                 withIntermediateDirectories: true)
+        let path = (dir as NSString).appendingPathComponent("cli-host-debug.log")
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let line = "\(ts) pid=\(pid) source=\(src) instance=\(inst) contextMenu.make()\n"
+        if let data = line.data(using: .utf8) {
+            if let h = FileHandle(forWritingAtPath: path) {
+                defer { try? h.close() }
+                _ = try? h.seekToEnd()
+                try? h.write(contentsOf: data)
+            } else {
+                FileManager.default.createFile(atPath: path, contents: data)
+            }
+        }
+    }
+
     static func make() -> NSMenu {
+        logInvocation()
+        // Bridge-spawned hosts run with .accessory activation policy and
+        // never become the frontmost app on their own. Without an explicit
+        // activate() the popUpContextMenu call inside upstream's
+        // PetSpriteView dispatches to a window that isn't key, and AppKit
+        // silently dismisses the menu before it's visible — which looks
+        // exactly like "context menu does nothing" from the user's POV.
+        // Forcing activation here fixes that.
+        NSApplication.shared.activate(ignoringOtherApps: true)
         let menu = NSMenu()
         menu.autoenablesItems = false
         let target = OpenPetsCLIContextMenuTarget.shared
@@ -438,6 +474,32 @@ struct OpenPetsCLI {
                 sourceID: ProcessInfo.processInfo.environment["OPENPETS_BRIDGE_SOURCE_ID"],
                 instanceID: ProcessInfo.processInfo.environment["OPENPETS_INSTANCE_ID"]
             )
+            // Mark "host alive" in the bridge log dir so we can correlate it
+            // with later contextMenu.make() invocations during right-click
+            // diagnosis. One line per spawn, never blocks if the dir isn't
+            // writable for some reason.
+            do {
+                let env = ProcessInfo.processInfo.environment
+                let src = env["OPENPETS_BRIDGE_SOURCE_ID"] ?? "(none)"
+                let inst = env["OPENPETS_INSTANCE_ID"] ?? "(none)"
+                let pid = ProcessInfo.processInfo.processIdentifier
+                let dir = (NSHomeDirectory() as NSString)
+                    .appendingPathComponent("Library/Logs/openpets-bridge")
+                try? FileManager.default.createDirectory(atPath: dir,
+                                                         withIntermediateDirectories: true)
+                let path = (dir as NSString).appendingPathComponent("cli-host-debug.log")
+                let ts = ISO8601DateFormatter().string(from: Date())
+                let line = "\(ts) pid=\(pid) source=\(src) instance=\(inst) HOST_STARTED pet=\(petPath) socket=\(socketPath)\n"
+                if let data = line.data(using: .utf8) {
+                    if let h = FileHandle(forWritingAtPath: path) {
+                        defer { try? h.close() }
+                        _ = try? h.seekToEnd()
+                        try? h.write(contentsOf: data)
+                    } else {
+                        FileManager.default.createFile(atPath: path, contents: data)
+                    }
+                }
+            }
             app.delegate = delegate
             app.setActivationPolicy(.accessory)
             app.run()

@@ -58,6 +58,15 @@ These changes ship in the same fork commit but belong to the menubar app
 rather than the Python bridge; listed here so the deployment story stays
 in one place.
 
+- **QW4 fix**: right-click on bridge-spawned multi-pet sprites now
+  actually shows the context menu. The CLI host runs with `.accessory`
+  activation policy and was never frontmost, so AppKit silently
+  dismissed `popUpContextMenu` before the menu appeared. The
+  `OpenPetsCLIContextMenu.make()` provider now calls
+  `NSApplication.shared.activate(ignoringOtherApps: true)` first, which
+  fixes the empty-right-click reported on 2026-05-11. Verified live
+  with `~/Library/Logs/openpets-bridge/cli-host-debug.log` (HOST_STARTED
+  + per-click `contextMenu.make()` invocations).
 - `OpenPetsBridgeSubmenu` refactored to stop sharing `NSMenuItem`
   instances across menus. Fixes the `NSInternalInconsistencyException`
   that fired when the Bridge submenu was attached to both the status
@@ -71,6 +80,9 @@ in one place.
   don't ingest log noise.
 - Single shared `BridgeBinaryLocator` (with PATH fallback) used from the
   Bridge submenu, Preferences window, and CLI.
+- Optional diagnostic logging in `OpenPetsCLIContextMenu` writes one
+  line per right-click to `~/Library/Logs/openpets-bridge/cli-host-debug.log`
+  — keeps future QW4-style regressions easy to root-cause.
 
 ## [0.4.0]
 
