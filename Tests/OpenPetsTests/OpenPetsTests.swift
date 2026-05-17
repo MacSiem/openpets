@@ -30,14 +30,125 @@ final class OpenPetsTests: XCTestCase {
         let script = try String(contentsOf: scriptURL, encoding: .utf8)
 
         XCTAssertTrue(script.contains("OpenPetsKit_OpenPetsKit.bundle"))
-        XCTAssertTrue(script.contains("$APP_BUNDLE/OpenPetsKit_OpenPetsKit.bundle/pet.json"))
+        XCTAssertTrue(script.contains("$APP_BUNDLE/Contents/Resources/OpenPetsKit_OpenPetsKit.bundle/pet.json"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle"))
-        XCTAssertTrue(script.contains("$APP_BUNDLE/OpenPets_OpenPetsMenuBar.bundle/codex.png"))
+        XCTAssertTrue(script.contains("$APP_BUNDLE/Contents/Resources/OpenPets_OpenPetsMenuBar.bundle/codex.png"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle/codex.png"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle/claude.png"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle/pi.png"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle/opencode.png"))
         XCTAssertTrue(script.contains("OpenPets_OpenPetsMenuBar.bundle/zed.png"))
+    }
+
+    func testAgentLogoLookupFindsPackagedAppResourceBundleWithoutBundleModule() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceLogoURL = rootURL.appendingPathComponent("Sources/OpenPetsMenuBar/Resources/AgentLogos/codex.png")
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let appURL = temporaryURL.appendingPathComponent("OpenPets.app", isDirectory: true)
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+        let executableDirectoryURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+        let logoBundleURL = resourcesURL.appendingPathComponent("OpenPets_OpenPetsMenuBar.bundle", isDirectory: true)
+        let packagedLogoURL = logoBundleURL.appendingPathComponent("codex.png")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        try FileManager.default.createDirectory(at: logoBundleURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: executableDirectoryURL, withIntermediateDirectories: true)
+        try Data().write(to: executableDirectoryURL.appendingPathComponent("OpenPets"))
+        try FileManager.default.copyItem(at: sourceLogoURL, to: packagedLogoURL)
+        let plist: NSDictionary = [
+            "CFBundleExecutable": "OpenPets",
+            "CFBundleIdentifier": "sh.openpets.test",
+            "CFBundlePackageType": "APPL"
+        ]
+        XCTAssertTrue(plist.write(to: contentsURL.appendingPathComponent("Info.plist"), atomically: true))
+
+        let appBundle = try XCTUnwrap(Bundle(url: appURL))
+        let url = try XCTUnwrap(OpenPetsAgentLogoResources.logoURL(resourceName: "codex", bundle: appBundle))
+
+        XCTAssertEqual(url.standardizedFileURL, packagedLogoURL.standardizedFileURL)
+    }
+
+    func testAgentLogoLookupIncludesAppResourceBundleLocation() {
+        let urls = OpenPetsAgentLogoResources.resourceBundleURLs()
+
+        XCTAssertTrue(
+            urls.contains { url in
+                url.path.hasSuffix("Contents/Resources/OpenPets_OpenPetsMenuBar.bundle")
+            }
+        )
+    }
+
+    func testAgentLogoLoaderDoesNotUseGeneratedBundleModuleAccessor() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = rootURL.appendingPathComponent("Sources/OpenPetsMenuBar/OpenPetsAgentOnboardingWindow.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("Bundle.module"))
+    }
+
+    func testMenuBarPetLibraryFindsBundledStarcornWithoutBundleModule() {
+        let url = OpenPetsMenuBarPetLibrary().bundledStarcornURL()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("pet.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("spritesheet.webp").path))
+    }
+
+    func testMenuBarPetLibraryFindsPackagedAppBundledStarcornWithoutBundleModule() throws {
+        let sourceStarcornURL = OpenPetsMenuBarPetLibrary().bundledStarcornURL()
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let appURL = temporaryURL.appendingPathComponent("OpenPets.app", isDirectory: true)
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
+        let executableDirectoryURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+        let petBundleURL = resourcesURL.appendingPathComponent("OpenPetsKit_OpenPetsKit.bundle", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        try FileManager.default.createDirectory(at: petBundleURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: executableDirectoryURL, withIntermediateDirectories: true)
+        try Data().write(to: executableDirectoryURL.appendingPathComponent("OpenPets"))
+        try FileManager.default.copyItem(
+            at: sourceStarcornURL.appendingPathComponent("pet.json"),
+            to: petBundleURL.appendingPathComponent("pet.json")
+        )
+        try FileManager.default.copyItem(
+            at: sourceStarcornURL.appendingPathComponent("spritesheet.webp"),
+            to: petBundleURL.appendingPathComponent("spritesheet.webp")
+        )
+        let plist: NSDictionary = [
+            "CFBundleExecutable": "OpenPets",
+            "CFBundleIdentifier": "sh.openpets.test",
+            "CFBundlePackageType": "APPL"
+        ]
+        XCTAssertTrue(plist.write(to: contentsURL.appendingPathComponent("Info.plist"), atomically: true))
+
+        let appBundle = try XCTUnwrap(Bundle(url: appURL))
+        let resolvedURL = OpenPetsMenuBarPetLibrary(bundle: appBundle).bundledStarcornURL()
+
+        XCTAssertEqual(resolvedURL.standardizedFileURL, petBundleURL.standardizedFileURL)
+    }
+
+    func testMenuBarPetLibraryDoesNotUseGeneratedBundleModuleAccessor() throws {
+        let rootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let librarySourceURL = rootURL.appendingPathComponent("Sources/OpenPetsMenuBar/OpenPetsMenuBarPetLibrary.swift")
+        let menuBarSourceURL = rootURL.appendingPathComponent("Sources/OpenPetsMenuBar/OpenPetsMenuBar.swift")
+
+        let librarySource = try String(contentsOf: librarySourceURL, encoding: .utf8)
+        let menuBarSource = try String(contentsOf: menuBarSourceURL, encoding: .utf8)
+
+        XCTAssertFalse(librarySource.contains("Bundle.module"))
+        XCTAssertFalse(menuBarSource.contains("OpenPetsPetLibrary()"))
     }
 
     @MainActor
@@ -57,23 +168,278 @@ final class OpenPetsTests: XCTestCase {
         let titles = menuItemTitles(menu)
 
         XCTAssertEqual(
-            titles.firstIndex(of: "Call my pet"),
+            titles.firstIndex(of: "Call My Pet"),
             titles.firstIndex(of: "Wake Pet").map { $0 + 1 }
+        )
+        XCTAssertEqual(
+            titles.firstIndex(of: "Clear All Notifications"),
+            titles.firstIndex(of: "Call My Pet").map { $0 + 1 }
+        )
+        XCTAssertEqual(
+            titles.firstIndex { $0.hasPrefix("Active Pet:") },
+            titles.firstIndex(of: "Clear All Notifications").map { $0 + 1 }
         )
     }
 
     @MainActor
-    func testMenusIncludeGalleryInstallerCLIInstallerAndVersion() throws {
+    func testMenusIncludeGallerySettingsAssistantConnectionAndVersion() throws {
         let controller = OpenPetsMenuBarController()
         let menu = controller.makeStatusItemMenu()
         let titles = menuItemTitles(menu)
 
-        XCTAssertTrue(titles.contains("Install pets..."))
-        XCTAssertTrue(titles.contains("Install CLI"))
-        XCTAssertFalse(titles.contains("Install Command Line Tool"))
+        XCTAssertTrue(titles.contains("Install Pets..."))
+        XCTAssertTrue(titles.contains("Plugins"))
+        XCTAssertTrue(titles.contains("Connect Assistants..."))
+        XCTAssertFalse(titles.contains("Set Up AI Assistants..."))
+        XCTAssertFalse(titles.contains("Install CLI"))
+
+        let settingsItem = try XCTUnwrap(menu.items.first { $0.title == "Settings" })
+        let settingsMenu = try XCTUnwrap(settingsItem.submenu)
+        XCTAssertEqual(
+            menuItemTitles(settingsMenu),
+            [
+                "Server Status: Stopped",
+                "Start MCP Server",
+                "Copy MCP URL",
+                "<separator>",
+                "Open Config Folder",
+                "Install CLI Tool"
+            ]
+        )
 
         let versionItem = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("Version ") })
         XCTAssertFalse(versionItem.isEnabled)
+    }
+
+    @MainActor
+    func testMenuIncludesPluginToggleSubmenu() throws {
+        try withTemporaryXDGConfigHome {
+            let controller = OpenPetsMenuBarController()
+            let menu = controller.makeStatusItemMenu()
+
+            let pluginsItem = try XCTUnwrap(menu.items.first { $0.title == "Plugins" })
+            let submenu = try XCTUnwrap(pluginsItem.submenu)
+
+            XCTAssertEqual(submenu.items.map(\.title), ["Battery", "Claude Code", "Codex Usage"])
+            XCTAssertTrue(submenu.items.allSatisfy { $0.action != nil })
+            XCTAssertEqual(submenu.items.first { $0.title == "Battery" }?.representedObject as? String, OpenPetsBatterySurfacePlugin.pluginID)
+            XCTAssertEqual(
+                submenu.items.first { $0.title == "Claude Code" }?.representedObject as? String,
+                OpenPetsClaudeCodeSurfacePlugin.pluginID
+            )
+            XCTAssertEqual(
+                submenu.items.first { $0.title == "Codex Usage" }?.representedObject as? String,
+                OpenPetsCodexUsageSurfacePlugin.pluginID
+            )
+            XCTAssertEqual(submenu.items.first { $0.title == "Battery" }?.state, .on)
+            XCTAssertEqual(submenu.items.first { $0.title == "Claude Code" }?.state, .off)
+            XCTAssertEqual(submenu.items.first { $0.title == "Codex Usage" }?.state, .off)
+        }
+    }
+
+    func testPluginTogglePersistsNonDefaultPluginOptIn() throws {
+        let batteryPluginID = "openpets.plugin.battery"
+        let claudeCodePluginID = "openpets.plugin.claude-code"
+        var configuration = OpenPetsConfiguration()
+
+        XCTAssertTrue(configuration.isPluginEnabled(batteryPluginID))
+        XCTAssertFalse(configuration.isPluginEnabled(claudeCodePluginID))
+
+        configuration.setPlugin(claudeCodePluginID, enabled: true)
+
+        XCTAssertTrue(configuration.isPluginEnabled(claudeCodePluginID))
+        XCTAssertEqual(configuration.enabledPluginIDs, [claudeCodePluginID])
+        XCTAssertEqual(configuration.disabledPluginIDs, [])
+
+        configuration.setPlugin(claudeCodePluginID, enabled: false)
+
+        XCTAssertFalse(configuration.isPluginEnabled(claudeCodePluginID))
+        XCTAssertEqual(configuration.enabledPluginIDs, [])
+        XCTAssertEqual(configuration.disabledPluginIDs, [claudeCodePluginID])
+
+        configuration.setPlugin(batteryPluginID, enabled: false)
+
+        XCTAssertFalse(configuration.isPluginEnabled(batteryPluginID))
+        XCTAssertEqual(configuration.enabledPluginIDs, [])
+        XCTAssertEqual(configuration.disabledPluginIDs, [batteryPluginID, claudeCodePluginID])
+    }
+
+    @MainActor
+    func testSurfaceContextMenuShowsPositionDetailsAndPluginActions() throws {
+        try withTemporaryXDGConfigHome {
+            let controller = OpenPetsMenuBarController()
+            let update = OpenPetsSurfaceUpdate(
+                surfaceID: "battery.badge",
+                slotPreference: [.hotspotTopTrailing, .hotspotRight],
+                icon: OpenPetsSurfaceIcons.battery75,
+                value: "68%",
+                label: "Battery",
+                detail: OpenPetsSurfaceDetailData(title: "Battery", rows: [
+                    OpenPetsSurfaceDetailRow(label: "Charge", value: "68%")
+                ])
+            )
+            controller.setSurfaceUpdates([update], forPluginID: OpenPetsBatterySurfacePlugin.pluginID)
+
+            let menu = try XCTUnwrap(controller.makeSurfaceContextMenu(for: OpenPetsResolvedSurface(
+                update: update,
+                placement: .placed(.hotspotTopTrailing)
+            )))
+
+            XCTAssertEqual(menu.items.first?.title, "Position: Top Trailing")
+            XCTAssertFalse(menu.items.first?.isEnabled ?? true)
+
+            let moveItem = try XCTUnwrap(menu.items.first { $0.title == "Move to" })
+            let moveMenu = try XCTUnwrap(moveItem.submenu)
+            XCTAssertEqual(
+                moveMenu.items.map(\.title),
+                [
+                    "Top Trailing",
+                    "Top Leading",
+                    "Right",
+                    "Bottom Trailing",
+                    "Bottom Leading",
+                    "Left",
+                    "Below Leading",
+                    "Below Trailing"
+                ]
+            )
+            XCTAssertEqual(moveMenu.items.first { $0.title == "Top Trailing" }?.state, .on)
+            XCTAssertEqual(moveMenu.items.first { $0.title == "Right" }?.state, .off)
+
+            let detailItem = try XCTUnwrap(menu.items.first { $0.title == "Open Details" })
+            XCTAssertTrue(detailItem.isEnabled)
+            XCTAssertEqual(detailItem.representedObject as? String, "battery.badge")
+            XCTAssertNotNil(detailItem.action)
+
+            let disableItem = try XCTUnwrap(menu.items.first { $0.title == "Disable Battery" })
+            XCTAssertEqual(disableItem.representedObject as? String, OpenPetsBatterySurfacePlugin.pluginID)
+            XCTAssertNotNil(disableItem.action)
+
+            let belowMenu = try XCTUnwrap(controller.makeSurfaceContextMenu(for: OpenPetsResolvedSurface(
+                update: update,
+                placement: .placed(.hotspotBelowLeading)
+            )))
+            XCTAssertEqual(belowMenu.items.first?.title, "Position: Below Leading")
+        }
+    }
+
+    @MainActor
+    func testSurfaceContextMenuDisablesOpenDetailsWhenSurfaceHasNoDetail() throws {
+        let controller = OpenPetsMenuBarController()
+        let update = OpenPetsSurfaceUpdate(
+            surfaceID: "battery.badge",
+            icon: OpenPetsSurfaceIcons.battery75,
+            value: "68%",
+            label: "Battery"
+        )
+
+        let menu = try XCTUnwrap(controller.makeSurfaceContextMenu(for: OpenPetsResolvedSurface(
+            update: update,
+            placement: .placed(.hotspotTopTrailing)
+        )))
+
+        let detailItem = try XCTUnwrap(menu.items.first { $0.title == "Open Details" })
+        XCTAssertFalse(detailItem.isEnabled)
+    }
+
+    @MainActor
+    func testSelectingSurfaceSlotPersistsOverrideAndReordersPreferences() throws {
+        try withTemporaryXDGConfigHome {
+            let controller = OpenPetsMenuBarController()
+            let update = OpenPetsSurfaceUpdate(
+                surfaceID: "battery.badge",
+                slotPreference: [.hotspotTopTrailing, .hotspotRight],
+                icon: OpenPetsSurfaceIcons.battery75,
+                value: "68%",
+                label: "Battery"
+            )
+            controller.setSurfaceUpdates([update], forPluginID: OpenPetsBatterySurfacePlugin.pluginID)
+
+            let menu = try XCTUnwrap(controller.makeSurfaceContextMenu(for: OpenPetsResolvedSurface(
+                update: update,
+                placement: .placed(.hotspotTopTrailing)
+            )))
+            let rightItem = try XCTUnwrap(menu.items
+                .first { $0.title == "Move to" }?
+                .submenu?
+                .items
+                .first { $0.title == "Right" })
+            let action = try XCTUnwrap(rightItem.action)
+
+            XCTAssertTrue(NSApplication.shared.sendAction(action, to: rightItem.target, from: rightItem))
+
+            let reloaded = try OpenPetsConfiguration.load()
+            XCTAssertEqual(reloaded.surfaceSlotOverridesByID["battery.badge"], .hotspotRight)
+
+            controller.reloadConfiguration()
+            XCTAssertEqual(
+                controller.applyingSurfaceSlotOverride(to: update).slotPreference,
+                [.hotspotRight, .hotspotTopTrailing]
+            )
+        }
+    }
+
+    @MainActor
+    func testSurfaceRevealTargetsOnlyEnabledPluginSurfaceIDs() {
+        let controller = OpenPetsMenuBarController()
+        let updates = [
+            OpenPetsSurfaceUpdate(
+                surfaceID: "claude.5h",
+                icon: OpenPetsSurfaceIcons.sparkles,
+                value: "42%"
+            ),
+            OpenPetsSurfaceUpdate(
+                surfaceID: "claude.7d",
+                icon: OpenPetsSurfaceIcons.clock,
+                value: "18%"
+            )
+        ]
+
+        XCTAssertEqual(controller.surfaceRevealTargetIDs(for: updates), ["claude.5h", "claude.7d"])
+        XCTAssertEqual(controller.surfaceRevealTargetIDs(for: []), [])
+    }
+
+    @MainActor
+    func testMenuIncludesScaleSubmenu() throws {
+        let controller = OpenPetsMenuBarController()
+        let menu = controller.makeStatusItemMenu()
+
+        let scaleItem = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("Scale:") })
+        let submenu = try XCTUnwrap(scaleItem.submenu)
+
+        XCTAssertEqual(
+            submenu.items.map(\.title),
+            ["0.42x", "0.57x", "0.72x", "0.87x", "1.02x", "1.17x", "1.32x", "1.47x", "1.62x", "1.77x", "1.92x"]
+        )
+        XCTAssertEqual(
+            submenu.items.compactMap { ($0.representedObject as? NSNumber)?.doubleValue },
+            [0.42, 0.57, 0.72, 0.87, 1.02, 1.17, 1.32, 1.47, 1.62, 1.77, 1.92]
+        )
+        XCTAssertTrue(submenu.items.allSatisfy { $0.action != nil })
+    }
+
+    @MainActor
+    func testSelectingScaleSavesScaleForActivePet() throws {
+        try withTemporaryXDGConfigHome {
+            try OpenPetsConfiguration(
+                display: OpenPetsDisplayConfiguration(scale: 0.75),
+                activePetID: "active-pet",
+                petScalesByID: ["other-pet": 1.25]
+            ).save()
+
+            let controller = OpenPetsMenuBarController()
+            let menu = controller.makeStatusItemMenu()
+            let scaleItem = try XCTUnwrap(menu.items.first { $0.title == "Scale: 0.75x" })
+            let option = try XCTUnwrap(scaleItem.submenu?.items.first { $0.title == "1.47x" })
+            let action = try XCTUnwrap(option.action)
+
+            XCTAssertTrue(NSApplication.shared.sendAction(action, to: option.target, from: option))
+
+            let reloaded = try OpenPetsConfiguration.load()
+            XCTAssertEqual(reloaded.petScalesByID["active-pet"], 1.47)
+            XCTAssertEqual(reloaded.petScalesByID["other-pet"], 1.25)
+            XCTAssertEqual(reloaded.display.scale, 0.75)
+        }
     }
 
     @MainActor
@@ -204,6 +570,506 @@ final class OpenPetsTests: XCTestCase {
         let required = try schemaRequired(toolName: "stop_pet_animation")
 
         XCTAssertTrue(required.isEmpty)
+    }
+
+    func testBatterySurfacePluginShowsCloudSurfaceForNormalBattery() {
+        let updates = OpenPetsBatterySurfacePlugin.surfaceUpdates(for: OpenPetsBatterySnapshot(
+            percent: 68,
+            isCharging: false,
+            isPresent: true,
+            timeRemainingMinutes: 185
+        ))
+
+        XCTAssertEqual(updates.map(\.surfaceID), ["battery.badge"])
+        XCTAssertEqual(updates.first?.slotPreference, [.hotspotTopTrailing, .hotspotRight])
+        XCTAssertEqual(updates.first?.icon, OpenPetsSurfaceIcons.battery75)
+        XCTAssertEqual(updates.first?.value, "68%")
+        XCTAssertEqual(updates.first?.label, "Battery")
+        XCTAssertEqual(updates.first?.tone, .normal)
+        XCTAssertEqual(updates.first?.detail?.title, "Battery")
+        XCTAssertEqual(updates.first?.detail?.rows.map(\.label), ["Charge", "State", "Remaining"])
+        XCTAssertEqual(updates.first?.detail?.rows.first { $0.label == "State" }?.value, "Unplugged")
+        XCTAssertEqual(
+            updates.first?.detail?.actionURL,
+            "x-apple.systempreferences:com.apple.Battery-Settings.extension"
+        )
+        XCTAssertEqual(updates.first?.detail?.actionLabel, "Settings")
+        XCTAssertEqual(updates.first?.detail?.ttlSeconds, 8)
+    }
+
+    func testBatterySurfacePluginKeepsLowBatteryAsCriticalCloudSurface() {
+        let updates = OpenPetsBatterySurfacePlugin.surfaceUpdates(for: OpenPetsBatterySnapshot(
+            percent: 9,
+            isCharging: false,
+            isPresent: true,
+            timeRemainingMinutes: 22
+        ))
+
+        XCTAssertEqual(updates.map(\.surfaceID), ["battery.badge"])
+        let badge = try! XCTUnwrap(updates.first)
+        XCTAssertEqual(badge.priority, 90)
+        XCTAssertEqual(badge.icon, OpenPetsSurfaceIcons.battery25)
+        XCTAssertEqual(badge.value, "9%")
+        XCTAssertEqual(badge.tone, .critical)
+
+        XCTAssertEqual(OpenPetsBatterySurfacePlugin.reactionUpdates(for: OpenPetsBatterySnapshot(
+            percent: 9,
+            isCharging: false,
+            isPresent: true,
+            timeRemainingMinutes: 22
+        )), [
+            OpenPetsPetReactionUpdate(reactionID: "battery.low-energy", kind: .lowEnergy, priority: 90)
+        ])
+    }
+
+    func testBatterySurfacePluginKeepsChargingBatteryAsSuccessCloudSurfaceWithoutReaction() {
+        let updates = OpenPetsBatterySurfacePlugin.surfaceUpdates(for: OpenPetsBatterySnapshot(
+            percent: 82,
+            isCharging: true,
+            isPlugged: true,
+            isPresent: true,
+            timeRemainingMinutes: nil,
+            timeToFullChargeMinutes: 48
+        ))
+
+        XCTAssertEqual(updates.map(\.surfaceID), ["battery.badge"])
+        let badge = try! XCTUnwrap(updates.first { $0.surfaceID == "battery.badge" })
+        XCTAssertEqual(badge.icon, OpenPetsSurfaceIcons.batteryCharging)
+        XCTAssertEqual(badge.value, "82%")
+        XCTAssertEqual(badge.tone, .success)
+        XCTAssertEqual(badge.detail?.rows.map(\.label), ["Charge", "State", "Full"])
+        XCTAssertEqual(badge.detail?.rows.first { $0.label == "State" }?.value, "Plugged")
+        XCTAssertEqual(badge.detail?.rows.first { $0.label == "Full" }?.value, "48m")
+
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.reactionUpdates(for: OpenPetsBatterySnapshot(
+            percent: 82,
+            isCharging: true,
+            isPlugged: true,
+            isPresent: true,
+            timeRemainingMinutes: nil,
+            timeToFullChargeMinutes: 48
+        )).isEmpty)
+    }
+
+    func testBatterySurfacePluginDoesNotEmitChargingReactionBelowEightyPercent() {
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.reactionUpdates(for: OpenPetsBatterySnapshot(
+            percent: 64,
+            isCharging: true,
+            isPlugged: true,
+            isPresent: true,
+            timeRemainingMinutes: nil,
+            timeToFullChargeMinutes: 42
+        )).isEmpty)
+    }
+
+    func testBatterySurfacePluginReturnsNoSurfacesWhenBatteryMissing() {
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.surfaceUpdates(for: nil).isEmpty)
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.reactionUpdates(for: nil).isEmpty)
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.surfaceUpdates(for: OpenPetsBatterySnapshot(
+            percent: 50,
+            isCharging: false,
+            isPresent: false,
+            timeRemainingMinutes: nil
+        )).isEmpty)
+        XCTAssertTrue(OpenPetsBatterySurfacePlugin.reactionUpdates(for: OpenPetsBatterySnapshot(
+            percent: 50,
+            isCharging: false,
+            isPresent: false,
+            timeRemainingMinutes: nil
+        )).isEmpty)
+    }
+
+    func testClaudeCodeQuotaReaderParsesOAuthUsagePayload() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let sevenDayReset = ISO8601DateFormatter().string(from: now.addingTimeInterval(3 * 24 * 60 * 60))
+        let data = Data(
+            """
+            {
+              "five_hour": {
+                "utilization": 42.8,
+                "resets_at": "2027-01-15T09:30:00.528743+00:00"
+              },
+              "seven_day": {
+                "utilization": 18.1,
+                "resets_at": "\(sevenDayReset)"
+              },
+              "seven_day_opus": null,
+              "seven_day_sonnet": null,
+              "extra_usage": {
+                "is_enabled": false
+              }
+            }
+            """.utf8
+        )
+
+        let snapshot = try XCTUnwrap(OpenPetsClaudeCodeQuotaReader.snapshot(fromOAuthUsageData: data, now: now))
+
+        XCTAssertEqual(snapshot.fiveHour.usedPercentage, 42)
+        XCTAssertEqual(snapshot.fiveHour.durationMinutes, 300)
+        XCTAssertEqual(
+            snapshot.fiveHour.resetDate.timeIntervalSince1970,
+            1_800_005_400.528743,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(snapshot.sevenDay.usedPercentage, 18)
+        XCTAssertEqual(snapshot.sevenDay.durationMinutes, 10_080)
+        XCTAssertEqual(snapshot.sevenDay.resetDate, now.addingTimeInterval(3 * 24 * 60 * 60))
+    }
+
+    func testClaudeCodeQuotaReaderLoadsCredentialsFile() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let credentialsURL = directory.appendingPathComponent(".credentials.json")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try Data(
+            """
+            {
+              "claudeAiOauth": {
+                "accessToken": "test-access-token",
+                "refreshToken": "test-refresh-token",
+                "expiresAt": \((now.timeIntervalSince1970 + 3600) * 1000)
+              }
+            }
+            """.utf8
+        ).write(to: credentialsURL)
+
+        let credentials = OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: credentialsURL,
+            processRunner: FakeProcessRunner(responses: [:]),
+            environment: [:]
+        ).credentials(now: now)
+
+        XCTAssertEqual(
+            credentials,
+            OpenPetsClaudeCodeOAuthCredentials(
+                accessToken: "test-access-token",
+                expiresAt: now.addingTimeInterval(3600)
+            )
+        )
+    }
+
+    func testClaudeCodeQuotaReaderUsesEnvironmentOAuthToken() {
+        let credentials = OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: URL(fileURLWithPath: "/tmp/missing-credentials.json"),
+            processRunner: FakeProcessRunner(responses: [:]),
+            environment: ["CLAUDE_CODE_OAUTH_TOKEN": "env-access-token"]
+        ).credentials()
+
+        XCTAssertEqual(
+            credentials,
+            OpenPetsClaudeCodeOAuthCredentials(accessToken: "env-access-token", expiresAt: nil)
+        )
+    }
+
+    func testClaudeCodeQuotaReaderSendsOAuthUsageHeaders() async throws {
+        let requestRecorder = RequestRecorder()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let fiveHourReset = ISO8601DateFormatter().string(from: now.addingTimeInterval(90 * 60))
+        let sevenDayReset = ISO8601DateFormatter().string(from: now.addingTimeInterval(3 * 24 * 60 * 60))
+        let data = Data(
+            """
+            {
+              "five_hour": {
+                "utilization": 42,
+                "resets_at": "\(fiveHourReset)"
+              },
+              "seven_day": {
+                "utilization": 18,
+                "resets_at": "\(sevenDayReset)"
+              }
+            }
+            """.utf8
+        )
+        let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
+        _ = await OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: URL(fileURLWithPath: "/tmp/missing-credentials.json"),
+            usageURL: usageURL,
+            processRunner: FakeProcessRunner(responses: [:]),
+            environment: ["CLAUDE_CODE_OAUTH_TOKEN": "env-access-token"],
+            userAgent: "claude-code/1.2.3",
+            dataLoader: { request in
+                requestRecorder.request = request
+                return (data, HTTPURLResponse(
+                    url: usageURL,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        ).snapshot(now: now)
+
+        let request = try XCTUnwrap(requestRecorder.request)
+        XCTAssertEqual(request.url, usageURL)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer env-access-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-beta"), "oauth-2025-04-20")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "claude-code/1.2.3")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+    }
+
+    func testClaudeCodeQuotaReaderDoesNotRefreshCredentialsOnRateLimit() async {
+        let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+        let runner = FakeProcessRunner(responses: [:])
+
+        let snapshot = await OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: URL(fileURLWithPath: "/tmp/missing-credentials.json"),
+            usageURL: usageURL,
+            processRunner: runner,
+            environment: ["CLAUDE_CODE_OAUTH_TOKEN": "env-access-token"],
+            dataLoader: { _ in
+                (Data(), HTTPURLResponse(
+                    url: usageURL,
+                    statusCode: 429,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        ).snapshot()
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(runner.recordedInvocations, [
+            FakeProcessRunner.key("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        ])
+    }
+
+    func testClaudeCodeQuotaReaderRefreshesCredentialsOnUnauthorized() async {
+        let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+        let claudeURL = URL(fileURLWithPath: "/tmp/claude")
+        let runner = FakeProcessRunner(responses: [
+            FakeProcessRunner.key("/bin/zsh", ["-lc", "command -v claude"]): .success("\(claudeURL.path)\n"),
+            FakeProcessRunner.key(claudeURL.path, ["update"]): .success("")
+        ])
+
+        let snapshot = await OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: URL(fileURLWithPath: "/tmp/missing-credentials.json"),
+            usageURL: usageURL,
+            processRunner: runner,
+            environment: ["CLAUDE_CODE_OAUTH_TOKEN": "env-access-token"],
+            dataLoader: { _ in
+                (Data(), HTTPURLResponse(
+                    url: usageURL,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        ).snapshot()
+
+        XCTAssertNil(snapshot)
+        XCTAssertTrue(runner.recordedInvocations.contains(FakeProcessRunner.key("/bin/zsh", ["-lc", "command -v claude"])))
+        XCTAssertTrue(runner.recordedInvocations.contains(FakeProcessRunner.key(claudeURL.path, ["update"])))
+    }
+
+    func testClaudeCodeQuotaReaderDetectsClaudeConfiguration() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let claudeDirectory = directory.appendingPathComponent(".claude", isDirectory: true)
+        try FileManager.default.createDirectory(at: claudeDirectory, withIntermediateDirectories: true)
+
+        XCTAssertTrue(OpenPetsClaudeCodeQuotaReader(
+            credentialsURL: claudeDirectory.appendingPathComponent(".credentials.json"),
+            claudeConfigurationURLs: [claudeDirectory],
+            processRunner: FakeProcessRunner(responses: [:]),
+            environment: [:]
+        ).hasClaudeConfiguration())
+    }
+
+    func testClaudeCodeSurfacePluginShowsTwoQuotaCloudSurfaces() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = OpenPetsClaudeCodeQuotaSnapshot(
+            fiveHour: OpenPetsClaudeCodeQuotaWindow(
+                label: "5h",
+                usedPercentage: 42,
+                resetDate: now.addingTimeInterval(90 * 60),
+                durationMinutes: 300
+            ),
+            sevenDay: OpenPetsClaudeCodeQuotaWindow(
+                label: "7d",
+                usedPercentage: 76,
+                resetDate: now.addingTimeInterval(3 * 24 * 60 * 60),
+                durationMinutes: 10_080
+            )
+        )
+
+        let updates = OpenPetsClaudeCodeSurfacePlugin.surfaceUpdates(for: snapshot, now: now)
+
+        XCTAssertEqual(updates.map(\.surfaceID), ["claude.5h", "claude.7d"])
+        XCTAssertEqual(updates[0].slotPreference, [.hotspotTopLeading, .hotspotLeft])
+        XCTAssertEqual(updates[0].icon, OpenPetsSurfaceIcons.quota)
+        XCTAssertEqual(updates[0].value, "5h 42%")
+        XCTAssertEqual(updates[0].detail?.rows.map(\.label), ["Used", "Reset", "Pace"])
+        XCTAssertEqual(updates[0].detail?.rows.first { $0.label == "Reset" }?.value, "1h 30m")
+        XCTAssertEqual(updates[0].detail?.rows.first { $0.label == "Pace" }?.value, "28% under target")
+        XCTAssertEqual(updates[0].detail?.ttlSeconds, 12)
+        XCTAssertEqual(updates[1].slotPreference, [.hotspotBottomLeading, .hotspotLeft])
+        XCTAssertEqual(updates[1].value, "7d 76%")
+        XCTAssertEqual(updates[1].tone, .warning)
+    }
+
+    func testClaudeCodeSurfacePluginShowsSetupCloudWhenConfiguredButMissingQuotaData() {
+        let update = OpenPetsClaudeCodeSurfacePlugin.setupSurfaceUpdate()
+
+        XCTAssertEqual(update.surfaceID, "claude.setup")
+        XCTAssertEqual(update.icon, OpenPetsSurfaceIcons.info)
+        XCTAssertEqual(update.value, "Claude")
+        XCTAssertEqual(update.tone, .muted)
+        XCTAssertEqual(update.detail?.rows.map(\.label), ["Status", "Source"])
+        XCTAssertEqual(
+            update.detail?.rows.first { $0.label == "Source" }?.value,
+            "Claude Code OAuth"
+        )
+    }
+
+    func testClaudeCodeSurfacePluginEmitsCriticalReaction() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = OpenPetsClaudeCodeQuotaSnapshot(
+            fiveHour: OpenPetsClaudeCodeQuotaWindow(
+                label: "5h",
+                usedPercentage: 92,
+                resetDate: now.addingTimeInterval(20 * 60),
+                durationMinutes: 300
+            ),
+            sevenDay: OpenPetsClaudeCodeQuotaWindow(
+                label: "7d",
+                usedPercentage: 20,
+                resetDate: now.addingTimeInterval(6 * 24 * 60 * 60),
+                durationMinutes: 10_080
+            )
+        )
+
+        XCTAssertEqual(OpenPetsClaudeCodeSurfacePlugin.reactionUpdates(for: snapshot, now: now), [
+            OpenPetsPetReactionUpdate(
+                reactionID: "claude.quota-critical",
+                kind: .alert,
+                priority: 80,
+                ttlSeconds: 20
+            )
+        ])
+    }
+
+    func testCodexUsageReaderParsesLiveRateLimitPayload() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let data = Data(
+            """
+            {
+              "limits": {
+                "primary": {
+                  "used_percent": 42.8,
+                  "window_minutes": 300,
+                  "resets_in_seconds": 5400
+                },
+                "secondary": {
+                  "used_percent": 18,
+                  "window_minutes": 10080,
+                  "resets_in_seconds": 259200
+                },
+                "additional": {
+                  "used_percent": 8,
+                  "window_minutes": 43200,
+                  "resets_in_seconds": 864000
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let snapshot = try XCTUnwrap(OpenPetsCodexUsageReader.snapshot(fromLiveUsageData: data, now: now))
+
+        XCTAssertEqual(snapshot.source, "live")
+        XCTAssertEqual(snapshot.primary?.label, "5h")
+        XCTAssertEqual(snapshot.primary?.usedPercentage, 42)
+        XCTAssertEqual(snapshot.primary?.resetDate, now.addingTimeInterval(5400))
+        XCTAssertEqual(snapshot.secondary?.label, "7d")
+        XCTAssertEqual(snapshot.additional?.label, "30d")
+    }
+
+    func testCodexUsageSurfacePluginShowsUsageCloudSurfaces() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = OpenPetsCodexUsageSnapshot(
+            planType: "plus",
+            primary: OpenPetsCodexUsageBucket(
+                label: "5h",
+                usedPercentage: 42,
+                windowMinutes: 300,
+                resetDate: now.addingTimeInterval(90 * 60),
+                kind: "primary"
+            ),
+            secondary: OpenPetsCodexUsageBucket(
+                label: "7d",
+                usedPercentage: 76,
+                windowMinutes: 10_080,
+                resetDate: now.addingTimeInterval(3 * 24 * 60 * 60),
+                kind: "secondary"
+            ),
+            additional: nil,
+            observedAt: now,
+            source: "live"
+        )
+
+        let updates = OpenPetsCodexUsageSurfacePlugin.surfaceUpdates(for: snapshot, now: now)
+
+        XCTAssertEqual(updates.map(\.surfaceID), ["codex.primary", "codex.secondary"])
+        XCTAssertEqual(updates[0].slotPreference, [.hotspotTopLeading, .hotspotLeft])
+        XCTAssertEqual(updates[0].icon, OpenPetsSurfaceIcons.quota)
+        XCTAssertEqual(updates[0].value, "5h 58%")
+        XCTAssertEqual(updates[0].detail?.rows.map(\.label), ["Remaining", "Reset", "Pace"])
+        XCTAssertEqual(updates[0].detail?.rows.first { $0.label == "Remaining" }?.value, "58%")
+        XCTAssertEqual(updates[0].detail?.rows.first { $0.label == "Pace" }?.value, "28% under target")
+        XCTAssertNil(updates[0].detail?.rows.first { $0.label == "Used" })
+        XCTAssertNil(updates[0].detail?.rows.first { $0.label == "Source" })
+        XCTAssertNil(updates[0].detail?.rows.first { $0.label == "Plan" })
+        let resetValue = try! XCTUnwrap(updates[0].detail?.rows.first { $0.label == "Reset" }?.value)
+        XCTAssertTrue(resetValue.contains("in 1h 30m"))
+        XCTAssertTrue(resetValue.contains(":"))
+        XCTAssertFalse(resetValue.contains("2027"))
+        XCTAssertEqual(updates[0].detail?.ttlSeconds, 12)
+        XCTAssertEqual(updates[1].slotPreference, [.hotspotBottomLeading, .hotspotLeft])
+        XCTAssertEqual(updates[1].value, "7d 24%")
+        XCTAssertEqual(updates[1].tone, .warning)
+        XCTAssertEqual(updates[1].detail?.rows.first { $0.label == "Pace" }?.value, "19% over target")
+    }
+
+    func testCodexUsageSurfacePluginShowsSetupCloudWhenConfiguredButMissingUsageData() {
+        let update = OpenPetsCodexUsageSurfacePlugin.setupSurfaceUpdate()
+
+        XCTAssertEqual(update.surfaceID, "codex.usage.setup")
+        XCTAssertEqual(update.icon, OpenPetsSurfaceIcons.info)
+        XCTAssertEqual(update.value, "Codex")
+        XCTAssertEqual(update.tone, .muted)
+        XCTAssertEqual(update.detail?.rows.map(\.label), ["Status", "Source"])
+    }
+
+    func testCodexUsageSurfacePluginEmitsCriticalReaction() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = OpenPetsCodexUsageSnapshot(
+            planType: nil,
+            primary: OpenPetsCodexUsageBucket(
+                label: "5h",
+                usedPercentage: 92,
+                windowMinutes: 300,
+                resetDate: now.addingTimeInterval(20 * 60),
+                kind: "primary"
+            ),
+            secondary: OpenPetsCodexUsageBucket(
+                label: "7d",
+                usedPercentage: 20,
+                windowMinutes: 10_080,
+                resetDate: now.addingTimeInterval(6 * 24 * 60 * 60),
+                kind: "secondary"
+            ),
+            additional: nil,
+            observedAt: now,
+            source: "live"
+        )
+
+        XCTAssertEqual(OpenPetsCodexUsageSurfacePlugin.reactionUpdates(for: snapshot), [
+            OpenPetsPetReactionUpdate(
+                reactionID: "codex.usage-critical",
+                kind: .alert,
+                priority: 75,
+                ttlSeconds: 20
+            )
+        ])
     }
 
     func testCommandLineToolInstallerCreatesUserShim() throws {
@@ -1174,6 +2040,22 @@ final class OpenPetsTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    private func withTemporaryXDGConfigHome<T>(_ body: () throws -> T) throws -> T {
+        let originalValue = getenv("XDG_CONFIG_HOME").map { String(cString: $0) }
+        let directory = try makeTemporaryDirectory()
+        setenv("XDG_CONFIG_HOME", directory.path, 1)
+        defer {
+            if let originalValue {
+                setenv("XDG_CONFIG_HOME", originalValue, 1)
+            } else {
+                unsetenv("XDG_CONFIG_HOME")
+            }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return try body()
+    }
+
     private func runProcess(_ executable: String, arguments: [String], workingDirectory: URL? = nil) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -1410,6 +2292,10 @@ private final class FakeProcessRunner: OpenPetsProcessRunning, @unchecked Sendab
         recordedInvocations.append(key)
         return responses[key] ?? .failure("missing fake response")
     }
+}
+
+private final class RequestRecorder: @unchecked Sendable {
+    var request: URLRequest?
 }
 
 private extension OpenPetsProcessResult {

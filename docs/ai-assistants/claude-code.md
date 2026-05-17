@@ -39,6 +39,12 @@ Use local instructions when only your checkout should tell Claude to use OpenPet
 
 The OpenPets snippet belongs in a `CLAUDE.md` instruction file, not in the MCP config file. The MCP config makes the tools available; the `CLAUDE.md` guidance tells Claude when and how to use them.
 
+## Quota Cloud Plugin
+
+The built-in Claude Code cloud plugin reads Claude Code OAuth credentials and polls Anthropic's usage endpoint for authoritative `5h` and `7d` quota data. OpenPets looks for credentials in macOS Keychain item `Claude Code-credentials`, `~/.claude/.credentials.json`, or `CLAUDE_CODE_OAUTH_TOKEN`.
+
+When a token is expired, OpenPets tries to refresh Claude Code credentials by running `claude update`, then `claude auth status` as a fallback. The plugin polls at a conservative interval to avoid OAuth usage API rate limits.
+
 ## Notes
 
 The assistant must have access to the OpenPets MCP tools for the guidance to take effect. If the tools are not available in a session, Claude should not claim it notified through OpenPets.
