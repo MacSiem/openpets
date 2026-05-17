@@ -234,23 +234,51 @@ class MultiPetMode:
         launchd's KeepAlive watches `openpets-bridge` itself, but the
         per-source pet hosts it spawns are vanilla subprocesses — without
         this they stay dead until the bridge daemon is restarted.
+
+        Exception: if the user picked "Quit this pet host" from the
+        sprite's right-click menu, the CLI drops a marker file at
+        ``/tmp/openpets-quit-<source_id>.marker`` BEFORE terminating.
+        We honour that signal by dropping the source from our roster
+        and NOT respawning — otherwise the menu item would be useless
+        (the pet keeps coming back). Re-enabling the source from the
+        tray (or restarting the daemon) brings it back.
         """
         if not self._hosts:
             return
-        dead: list[str] = []
+        dead: list[tuple[str, bool]] = []   # (sid, user_quit)
         for sid, proc in self._hosts.items():
-            if proc.poll() is not None:
+            if proc.poll() is None:
+                continue
+            marker = f"/tmp/openpets-quit-{sid}.marker"
+            user_quit = os.path.exists(marker)
+            if user_quit:
+                try:
+                    os.unlink(marker)
+                except OSError:
+                    pass
+                log.info(
+                    "multi-pet: host for %s exited (rc=%s) — user-initiated "
+                    "quit; not respawning",
+                    sid, proc.returncode,
+                )
+            else:
                 log.warning(
                     "multi-pet: host for %s exited (rc=%s) — respawning",
                     sid, proc.returncode,
                 )
-                dead.append(sid)
+            dead.append((sid, user_quit))
         if not dead:
             return
-        # Drop the dead entries and let _spawn_hosts rebuild for ALL enabled
-        # sources missing a host. (We only re-spawn dead ones; live hosts are
-        # left alone via the `sid in self._hosts` guard inside _spawn_hosts.)
-        for sid in dead:
+        # Drop the dead entries. Live hosts are left alone via the
+        # `sid in self._hosts` guard inside _spawn_hosts. User-quit
+        # sources are also dropped so the next tick won't see them in
+        # _hosts — but since we don't call _spawn_hosts() unless we
+        # have crash-exits left, they stay down until external action.
+        had_crash = False
+        for sid, user_quit in dead:
             self._hosts.pop(sid, None)
             self._clients.pop(sid, None)
-        self._spawn_hosts()
+            if not user_quit:
+                had_crash = True
+        if had_crash:
+            self._spawn_hosts()

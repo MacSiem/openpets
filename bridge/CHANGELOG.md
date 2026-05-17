@@ -58,6 +58,14 @@ These changes ship in the same fork commit but belong to the menubar app
 rather than the Python bridge; listed here so the deployment story stays
 in one place.
 
+- **"Quit this pet host" actually quits**: the CLI now drops a
+  `/tmp/openpets-quit-<source>.marker` before terminating, and
+  `MultiPetMode._respawn_dead_hosts` checks for the marker before
+  re-spawning. Without this, the bridge's crash-recovery (P2-2) was
+  immediately re-launching every user-quit host, making the menu item
+  useless. Crashes (no marker) still respawn as before. New file
+  `tests/test_multi_pet_quit.py` covers user-quit, plain crash, and
+  mixed cases — pytest now 42/42.
 - **QW4 fix**: right-click on bridge-spawned multi-pet sprites now
   actually shows the context menu. The CLI host runs with `.accessory`
   activation policy and was never frontmost, so AppKit silently

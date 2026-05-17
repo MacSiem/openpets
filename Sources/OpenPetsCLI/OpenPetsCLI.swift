@@ -279,6 +279,18 @@ final class OpenPetsCLIContextMenuTarget: NSObject {
     }
 
     @objc func quit() {
+        // The bridge's MultiPetMode.tick() respawns any `openpets run`
+        // child that exited — necessary so a real crash recovers
+        // automatically, but it also defeats this menu item. Drop a
+        // marker file before terminating so the bridge knows this was a
+        // user-initiated quit and skips the respawn for this source.
+        // The bridge unlinks the marker after seeing it; the user can
+        // bring the pet back by un-muting in the tray Bridge submenu
+        // or by restarting the daemon.
+        if let sourceID = OpenPetsCLIRuntime.current?.sourceID, !sourceID.isEmpty {
+            let marker = "/tmp/openpets-quit-\(sourceID).marker"
+            FileManager.default.createFile(atPath: marker, contents: Data())
+        }
         NSApplication.shared.terminate(nil)
     }
 
