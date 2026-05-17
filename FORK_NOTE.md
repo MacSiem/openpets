@@ -162,7 +162,15 @@ MIT — same as upstream. See [`LICENSE`](./LICENSE).
 ## Submitting changes back
 
 The Swift additions in this fork are deliberately small, isolated, and
-behind no special build flags. If alterhq wants any of them upstream,
-they're easy to PR cleanly — happy to do that on request. Open an issue
-on [MacSiem/openpets](https://github.com/MacSiem/openpets/issues) first
-if you want to coordinate.
+behind no special build flags. The ones we'd most like to see merged
+upstream are collected in
+[`docs/upstream-proposals/`](./docs/upstream-proposals/) — each as a
+short markdown doc with problem statement, repro, exact diff, and
+suggested PR title/commit message. They're stand-alone (no bridge
+dependency) and rebased onto upstream `main` semantics so they're
+ready to PR as soon as alterhq says yes.
+
+We also keep a discussion-only issue draft for `alterhq/openpets` at
+[`docs/upstream-proposals/issue-draft-bridge-companion.md`](./docs/upstream-proposals/issue-draft-bridge-companion.md)
+so the bridge's existence isn't a surprise if alterhq browses fork
+network.

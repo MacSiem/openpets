@@ -1,3 +1,17 @@
+> **You're looking at MacSiem's fork** of [`alterhq/openpets`](https://github.com/alterhq/openpets).
+>
+> The upstream tree is **untouched**. Everything below this banner is exactly what alterhq ships. The fork adds three *additive* features layered on top — full breakdown in [`FORK_NOTE.md`](./FORK_NOTE.md):
+>
+> 1. **`openpets-bridge`** — a multi-AI activity daemon (Python, zero runtime deps) that forwards activity from Cowork, Codex CLI, Claude Code, Aider, Gemini, OpenCode, Continue, Cline, **and any custom LLM via `generic_jsonl`** to OpenPets through the documented `notify --thread` protocol.
+> 2. **`Bridge ▸`** and **`Preferences…`** sections in the OpenPets tray menu.
+> 3. **Right-click context menu** on multi-pet hosts spawned by the bridge.
+>
+> No upstream code is modified. Each addition is PR-able back to alterhq cleanly — see [`docs/upstream-proposals/`](./docs/upstream-proposals/) for the one we'd most like to land upstream.
+>
+> **Want stock OpenPets?** Use [alterhq's official releases](https://github.com/alterhq/openpets/releases/latest); you don't need this fork.
+
+---
+
 # OpenPets
 
 OpenPets is a native macOS desktop pet for visible agent progress, review prompts, completion states, and lightweight animations across local coding tools.
