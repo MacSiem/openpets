@@ -44,83 +44,27 @@ struct BridgePetPack {
 final class OpenPetsBridgeSubmenu: NSObject {
     static let shared = OpenPetsBridgeSubmenu()
 
-    private let label = "openpets-bridge"
     private let launchdLabel = "sh.openpets.bridge"
-    private var refreshTimer: Timer?
 
-    // Cached state — refreshed on each refreshNow() call.
+    // Background refresh loop. Replaces the previous `Timer.scheduledTimer`
+    // per project Agents.md ("Prefer async/await, Task, ContinuousClock…").
+    private var refreshTask: Task<Void, Never>?
+
+    // Cached state — refreshed on each refreshNow() call. The submenu's
+    // NSMenuItems are NOT cached on `self`: they're created fresh inside
+    // `rebuildSubmenu` so each menu (status menu, pet context menu) owns
+    // its own item instances. AppKit rejects the same NSMenuItem being
+    // added to two NSMenus simultaneously, which previously crashed the
+    // menubar app when `makeSubmenuItem()` was called for both menus.
     private var state: BridgeState?
     private var pets: [BridgePetPack] = []
+    private var bridgeInstalled: Bool = false
+    private var bridgeRunning: Bool = false
 
-    // Items we update from the timer
-    private lazy var statusItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Bridge: …", action: nil, keyEquivalent: "")
-        i.isEnabled = false
-        return i
-    }()
-    private lazy var startStopItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Start Bridge",
-                           action: #selector(toggleBridge),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var restartItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Restart Bridge",
-                           action: #selector(restartBridge),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var openConfigItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Open Bridge Config",
-                           action: #selector(openConfig),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var openLogItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Open Bridge Log",
-                           action: #selector(openLog),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var listPetsItem: NSMenuItem = {
-        let i = NSMenuItem(title: "List Installed Pet Packs",
-                           action: #selector(listPets),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var manageCliSourcesItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Manage CLI sources…",
-                           action: #selector(manageCliSources),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var clearDoneItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Clear Done Bubbles",
-                           action: #selector(clearDoneBubbles),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var clearAllItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Clear ALL Bubbles",
-                           action: #selector(clearAllBubbles),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
-    private lazy var installItem: NSMenuItem = {
-        let i = NSMenuItem(title: "Install openpets-bridge…",
-                           action: #selector(showInstallInstructions),
-                           keyEquivalent: "")
-        i.target = self
-        return i
-    }()
+    // Weak references to every Bridge submenu currently attached to a parent
+    // menu. `refreshNow` walks this set and rebuilds each one in place; AppKit
+    // automatically releases dead entries when their owning NSMenu drops.
+    private let attachedMenus: NSHashTable<NSMenu> = .weakObjects()
 
     // Build the submenu item that gets attached to a parent menu.
     // The submenu is a NSMenu delegate target — we rebuild its contents
@@ -130,46 +74,113 @@ final class OpenPetsBridgeSubmenu: NSObject {
         let sub = NSMenu(title: "Bridge")
         sub.autoenablesItems = false
         sub.delegate = self
+        attachedMenus.add(sub)
         rebuildSubmenu(sub)   // initial contents
         parent.submenu = sub
         refreshNow()
-        ensureTimer()
+        ensureRefreshLoop()
         return parent
     }
 
-    private weak var submenuRef: NSMenu?
-
     private func rebuildSubmenu(_ sub: NSMenu) {
-        submenuRef = sub
         sub.removeAllItems()
-        let installed = (bridgeBinaryPath() != nil)
 
+        // --- Status row ---
+        let statusItem = NSMenuItem(title: statusTitle(), action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
         sub.addItem(statusItem)
         sub.addItem(.separator())
+
+        // --- Start/Stop/Restart ---
+        let startStopItem = NSMenuItem(
+            title: bridgeRunning ? "Stop Bridge" : "Start Bridge",
+            action: #selector(toggleBridge),
+            keyEquivalent: ""
+        )
+        startStopItem.target = self
+        startStopItem.isEnabled = bridgeInstalled
         sub.addItem(startStopItem)
+
+        let restartItem = NSMenuItem(title: "Restart Bridge",
+                                     action: #selector(restartBridge),
+                                     keyEquivalent: "")
+        restartItem.target = self
+        restartItem.isEnabled = bridgeInstalled
         sub.addItem(restartItem)
 
-        if installed {
+        if bridgeInstalled {
             sub.addItem(.separator())
             sub.addItem(makeModeItem())
             sub.addItem(makeSourcesItem())
-            sub.addItem(manageCliSourcesItem)
+
+            let manageCliItem = NSMenuItem(title: "Manage CLI sources…",
+                                           action: #selector(manageCliSources),
+                                           keyEquivalent: "")
+            manageCliItem.target = self
+            sub.addItem(manageCliItem)
+
             if state?.mode == "multi" {
                 sub.addItem(makePetsItem())
             }
         }
 
         sub.addItem(.separator())
+
+        let openConfigItem = NSMenuItem(title: "Open Bridge Config",
+                                        action: #selector(openConfig),
+                                        keyEquivalent: "")
+        openConfigItem.target = self
+        openConfigItem.isEnabled = bridgeInstalled
         sub.addItem(openConfigItem)
+
+        let openLogItem = NSMenuItem(title: "Open Bridge Log",
+                                     action: #selector(openLog),
+                                     keyEquivalent: "")
+        openLogItem.target = self
+        openLogItem.isEnabled = bridgeInstalled
         sub.addItem(openLogItem)
+
+        let listPetsItem = NSMenuItem(title: "List Installed Pet Packs",
+                                      action: #selector(listPets),
+                                      keyEquivalent: "")
+        listPetsItem.target = self
+        listPetsItem.isEnabled = bridgeInstalled
         sub.addItem(listPetsItem)
+
         sub.addItem(.separator())
+
+        let clearDoneItem = NSMenuItem(title: "Clear Done Bubbles",
+                                       action: #selector(clearDoneBubbles),
+                                       keyEquivalent: "")
+        clearDoneItem.target = self
+        clearDoneItem.isEnabled = bridgeInstalled
         sub.addItem(clearDoneItem)
+
+        let clearAllItem = NSMenuItem(title: "Clear ALL Bubbles",
+                                      action: #selector(clearAllBubbles),
+                                      keyEquivalent: "")
+        clearAllItem.target = self
+        clearAllItem.isEnabled = bridgeInstalled
         sub.addItem(clearAllItem)
 
-        if !installed {
+        if !bridgeInstalled {
             sub.addItem(.separator())
+            let installItem = NSMenuItem(title: "Install openpets-bridge…",
+                                         action: #selector(showInstallInstructions),
+                                         keyEquivalent: "")
+            installItem.target = self
             sub.addItem(installItem)
+        }
+    }
+
+    private func statusTitle() -> String {
+        if !bridgeInstalled { return "Bridge: not installed" }
+        return bridgeRunning ? "Bridge: running" : "Bridge: stopped"
+    }
+
+    private func rebuildAllAttachedMenus() {
+        for menu in attachedMenus.allObjects {
+            rebuildSubmenu(menu)
         }
     }
 
@@ -333,83 +344,43 @@ final class OpenPetsBridgeSubmenu: NSObject {
         _ = runBridgeNeeded(args: ["config", "set-source-pet", sid, pet])
     }
 
-    // MARK: - State refresh from JSON
-
     // MARK: - State refresh
 
-    private func ensureTimer() {
-        if refreshTimer != nil { return }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0,
-                                            repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshNow() }
+    private func ensureRefreshLoop() {
+        if refreshTask != nil { return }
+        refreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self else { return }
+                self.refreshNow()
+                self.rebuildAllAttachedMenus()
+            }
         }
-        refreshTimer?.tolerance = 1.0
     }
 
     private func refreshNow() {
-        let installed = (bridgeBinaryPath() != nil)
-        let running = bridgeIsRunning()
+        bridgeInstalled = (BridgeBinaryLocator.find() != nil)
+        bridgeRunning = bridgeIsRunning()
 
-        if installed {
+        if bridgeInstalled {
             loadState()
             loadPets()
-        }
-
-        if !installed {
-            statusItem.title = "Bridge: not installed"
-            startStopItem.title = "Start Bridge"
-            startStopItem.isEnabled = false
-            restartItem.isEnabled = false
-            openConfigItem.isEnabled = false
-            openLogItem.isEnabled = false
-            listPetsItem.isEnabled = false
-            manageCliSourcesItem.isEnabled = false
-            clearDoneItem.isEnabled = false
-            clearAllItem.isEnabled = false
-            installItem.isHidden = false
-            return
-        }
-
-        installItem.isHidden = true
-        startStopItem.isEnabled = true
-        restartItem.isEnabled = true
-        openConfigItem.isEnabled = true
-        openLogItem.isEnabled = true
-        listPetsItem.isEnabled = true
-        manageCliSourcesItem.isEnabled = true
-        clearDoneItem.isEnabled = true
-        clearAllItem.isEnabled = true
-
-        if running {
-            statusItem.title = "Bridge: running"
-            startStopItem.title = "Stop Bridge"
         } else {
-            statusItem.title = "Bridge: stopped"
-            startStopItem.title = "Start Bridge"
+            state = nil
+            pets = []
         }
     }
 
     // MARK: - Bridge detection
 
-    private func bridgeBinaryPath() -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/openpets-bridge",
-            "/usr/local/bin/openpets-bridge",
-            (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/openpets-bridge"),
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        return nil
-    }
-
     private func bridgeIsRunning() -> Bool {
-        // Ask launchd; an entry with a numeric PID means the agent is running.
+        // Prefer `launchctl print` — it returns 0 iff the agent is bootstrapped,
+        // and its output contains `state = running` when the process is alive.
+        // Falls back to `launchctl list` parsing for older macOS.
+        let label = "gui/\(getuid())/\(launchdLabel)"
         let task = Process()
         task.launchPath = "/bin/launchctl"
-        task.arguments = ["list", launchdLabel]
+        task.arguments = ["print", label]
         let out = Pipe()
         task.standardOutput = out
         task.standardError = Pipe()
@@ -422,12 +393,13 @@ final class OpenPetsBridgeSubmenu: NSObject {
         guard task.terminationStatus == 0 else { return false }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         guard let txt = String(data: data, encoding: .utf8) else { return false }
-        // Output lines: "PID" / "LastExitStatus" / "Label". A real PID is non-empty
-        // and not "-".
+        // `launchctl print` returns blocks like:
+        //   state = running
+        // or `state = not running` when stopped but bootstrapped.
         for line in txt.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("\"PID\"") {
-                return !(trimmed.contains("= -") || trimmed.contains("= \"-\""))
+            if trimmed.hasPrefix("state =") {
+                return trimmed.contains("running") && !trimmed.contains("not running")
             }
         }
         return false
@@ -436,18 +408,19 @@ final class OpenPetsBridgeSubmenu: NSObject {
     // MARK: - Actions
 
     @objc private func toggleBridge() {
-        if bridgeIsRunning() {
+        if bridgeRunning {
             _ = runLaunchctl(["bootout", "gui/\(getuid())/\(launchdLabel)"])
         } else {
             let plist = (NSHomeDirectory() as NSString)
                 .appendingPathComponent("Library/LaunchAgents/\(launchdLabel).plist")
             if FileManager.default.fileExists(atPath: plist) {
                 _ = runLaunchctl(["bootstrap", "gui/\(getuid())", plist])
-            } else if let bin = bridgeBinaryPath() {
+            } else if let bin = BridgeBinaryLocator.find() {
                 _ = runBridge(bin: bin, args: ["install"])
             }
         }
         refreshNow()
+        rebuildAllAttachedMenus()
     }
 
     @objc private func restartBridge() {
@@ -458,6 +431,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
             _ = runLaunchctl(["bootstrap", "gui/\(getuid())", plist])
         }
         refreshNow()
+        rebuildAllAttachedMenus()
     }
 
     @objc private func openConfig() {
@@ -469,7 +443,9 @@ final class OpenPetsBridgeSubmenu: NSObject {
     }
 
     @objc private func openLog() {
+        // Prefer the canonical macOS log location, then the bridge's legacy ones.
         let candidates = [
+            (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs/openpets-bridge/bridge.log"),
             (NSHomeDirectory() as NSString).appendingPathComponent("ai-stack/openpets-bridge/bridge.log"),
             (NSHomeDirectory() as NSString).appendingPathComponent(".local/state/openpets-bridge/bridge.log"),
         ]
@@ -479,16 +455,16 @@ final class OpenPetsBridgeSubmenu: NSObject {
                 return
             }
         }
-        // Fallback: open the directory
+        // Fallback: open the canonical log directory.
         let dir = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".local/state/openpets-bridge")
+            .appendingPathComponent("Library/Logs/openpets-bridge")
         try? FileManager.default.createDirectory(atPath: dir,
                                                  withIntermediateDirectories: true)
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
     @objc private func listPets() {
-        guard let bin = bridgeBinaryPath() else { return }
+        guard let bin = BridgeBinaryLocator.find() else { return }
         let result = runBridge(bin: bin, args: ["list-pets"])
         showAlert(title: "Installed Pet Packs",
                   body: result.isEmpty ? "(no pet packs found)" : result)
@@ -502,12 +478,12 @@ final class OpenPetsBridgeSubmenu: NSObject {
     }
 
     @objc private func clearDoneBubbles() {
-        guard let bin = bridgeBinaryPath() else { return }
+        guard let bin = BridgeBinaryLocator.find() else { return }
         _ = runBridge(bin: bin, args: ["clear", "--done-only"])
     }
 
     @objc private func clearAllBubbles() {
-        guard let bin = bridgeBinaryPath() else { return }
+        guard let bin = BridgeBinaryLocator.find() else { return }
         let alert = NSAlert()
         alert.messageText = "Clear all OpenPets bubbles?"
         alert.informativeText = "This removes every active and done bubble for every AI source."
@@ -542,19 +518,22 @@ final class OpenPetsBridgeSubmenu: NSObject {
     }
 
     private func runBridge(bin: String, args: [String]) -> String {
+        // stdout and stderr are captured into separate pipes so JSON parsers
+        // (`config show`) never see warning noise mixed in.
         let task = Process()
         task.launchPath = bin
         task.arguments = args
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = out
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
         do {
             try task.run()
             task.waitUntilExit()
         } catch {
             return "Could not run \(bin): \(error.localizedDescription)"
         }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
     }
 
@@ -569,22 +548,20 @@ final class OpenPetsBridgeSubmenu: NSObject {
     // MARK: - Bridge command + state load
 
     /// Run `openpets-bridge <args>` and immediately refresh the cached state
-    /// and rebuild the submenu so checkmarks update without the user having
-    /// to re-open the menu.
+    /// and rebuild every attached submenu so checkmarks update without the
+    /// user having to re-open the menu.
     @discardableResult
     private func runBridgeNeeded(args: [String]) -> String {
-        guard let bin = bridgeBinaryPath() else { return "" }
+        guard let bin = BridgeBinaryLocator.find() else { return "" }
         let output = runBridge(bin: bin, args: args)
         refreshNow()
-        if let sub = submenuRef {
-            rebuildSubmenu(sub)
-        }
+        rebuildAllAttachedMenus()
         return output
     }
 
     /// Call `openpets-bridge config show` and parse the JSON into BridgeState.
     private func loadState() {
-        guard let bin = bridgeBinaryPath() else { state = nil; return }
+        guard let bin = BridgeBinaryLocator.find() else { state = nil; return }
         let raw = runBridge(bin: bin, args: ["config", "show"])
         guard let data = raw.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -621,7 +598,7 @@ final class OpenPetsBridgeSubmenu: NSObject {
     /// Call `openpets-bridge list-pets` and parse the plain-text output
     /// into a list of pet packs for the picker submenu.
     private func loadPets() {
-        guard let bin = bridgeBinaryPath() else { pets = []; return }
+        guard let bin = BridgeBinaryLocator.find() else { pets = []; return }
         let raw = runBridge(bin: bin, args: ["list-pets"])
         var packs: [BridgePetPack] = []
         var pendingName: String? = nil
@@ -652,14 +629,59 @@ final class OpenPetsBridgeSubmenu: NSObject {
 
 extension OpenPetsBridgeSubmenu: NSMenuDelegate {
     nonisolated func menuNeedsUpdate(_ menu: NSMenu) {
-        // menuNeedsUpdate is called on the main thread by AppKit anyway —
-        // just dispatch to MainActor without recapturing `menu` across the
-        // isolation boundary (we reach it through submenuRef instead).
+        // menuNeedsUpdate is called on the main thread by AppKit. We hop to
+        // the MainActor without recapturing `menu` across the isolation
+        // boundary — the attachedMenus weak set lets us rebuild any visible
+        // submenu safely.
         Task { @MainActor in
             self.refreshNow()
-            if let sub = self.submenuRef {
-                self.rebuildSubmenu(sub)
+            self.rebuildAllAttachedMenus()
+        }
+    }
+}
+
+// MARK: - Shared bridge-binary locator
+
+/// Finds the `openpets-bridge` executable across the locations where it can
+/// reasonably end up (Homebrew prefix, system `/usr/local/bin`, the user's
+/// `~/.local/bin` for `pip install --user`, or anywhere on `PATH`).
+///
+/// Centralized here so OpenPetsBridgeSubmenu, OpenPetsPreferencesWindow, and
+/// OpenPetsCLI don't each maintain their own copy of the path list.
+@MainActor
+enum BridgeBinaryLocator {
+    static let knownCandidates: [String] = [
+        "/opt/homebrew/bin/openpets-bridge",
+        "/usr/local/bin/openpets-bridge",
+        (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/openpets-bridge"),
+    ]
+
+    static func find() -> String? {
+        for path in knownCandidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
             }
         }
+        // Fallback: ask the shell's PATH via /usr/bin/env. Useful for users
+        // whose bridge lives in a venv or conda env on PATH but not in the
+        // hard-coded list above.
+        let task = Process()
+        task.launchPath = "/usr/bin/env"
+        task.arguments = ["which", "openpets-bridge"]
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let s = String(data: data, encoding: .utf8) else { return nil }
+        let path = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path.isEmpty { return nil }
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 }

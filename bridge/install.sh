@@ -68,13 +68,19 @@ if [[ ! -d /Applications/OpenPets.app ]]; then
 fi
 ok "OpenPets.app present"
 
-# 5. Install or upgrade openpets-bridge (zero deps, no extras)
+# 5. Install or upgrade openpets-bridge (zero deps, no extras).
+#    The pyproject.toml lives in the bridge/ subdirectory of the repo, so we
+#    need the `subdirectory=bridge` URL fragment — otherwise pipx clones the
+#    repo and can't find a pyproject.toml at the root.
+PIPX_URL="openpets-bridge @ git+${REPO}#subdirectory=bridge"
 if pipx list 2>/dev/null | grep -q "openpets-bridge"; then
   c_blue "Upgrading openpets-bridge..."
+  # `pipx upgrade <name>` re-uses the original install URL, so the subdirectory
+  # is preserved automatically.
   pipx upgrade openpets-bridge
 else
   c_blue "Installing openpets-bridge from GitHub..."
-  pipx install "openpets-bridge @ git+${REPO}"
+  pipx install "${PIPX_URL}"
 fi
 ok "openpets-bridge installed: $(command -v openpets-bridge)"
 

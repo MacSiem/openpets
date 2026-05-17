@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
-import shutil
 import sys
+import time
 from pathlib import Path
+from shlex import quote as shlex_quote
 
 
 def _find_first_existing(*candidates: Path) -> str | None:
@@ -35,10 +37,36 @@ def _launchd_plist_path(label: str = LAUNCHD_LABEL) -> Path:
 
 
 def _python_executable() -> str:
-    # Prefer Homebrew python explicitly so launchd doesn't break on PATH
-    for cand in ("/opt/homebrew/bin/python3.12",
-                 "/opt/homebrew/bin/python3",
-                 sys.executable):
+    """Pick the Python interpreter that goes into the launchd plist.
+
+    We prefer newer Homebrew Pythons first so that on M-series Macs running
+    3.14 we don't lock the agent to whichever 3.12 install happens to exist
+    today (and then break if the user upgrades to 3.15 and prunes 3.14).
+    """
+    # 1. Explicit Homebrew versioned bins, newest first. Covers both Apple
+    #    Silicon (/opt/homebrew) and Intel (/usr/local) prefixes.
+    versioned_candidates = [
+        "/opt/homebrew/bin/python3.14",
+        "/opt/homebrew/bin/python3.13",
+        "/opt/homebrew/bin/python3.12",
+        "/opt/homebrew/bin/python3.11",
+        "/opt/homebrew/bin/python3.10",
+        "/usr/local/bin/python3.14",
+        "/usr/local/bin/python3.13",
+        "/usr/local/bin/python3.12",
+        "/usr/local/bin/python3.11",
+        "/usr/local/bin/python3.10",
+    ]
+    for cand in versioned_candidates:
+        if os.path.isfile(cand):
+            return cand
+    # 2. Glob /opt/homebrew/bin/python3.* to catch new minors (3.15+) we
+    #    haven't enumerated yet. Sort descending so the newest wins.
+    for cand in sorted(glob.glob("/opt/homebrew/bin/python3.*"), reverse=True):
+        if os.path.isfile(cand) and not cand.endswith(("-config", "t")):
+            return cand
+    # 3. Generic symlink, then the current interpreter as a final fallback.
+    for cand in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", sys.executable):
         if os.path.isfile(cand):
             return cand
     return sys.executable
@@ -111,9 +139,11 @@ def cmd_status(args) -> int:
 def cmd_install(args) -> int:
     """Install the bridge launchd agent (controls live in OpenPets.app's tray)."""
     bridgeconfig.write_default()
-    log_dir = Path.home() / "ai-stack/openpets-bridge"
+    # Canonical macOS log location (~/Library/Logs/openpets-bridge). The
+    # legacy ~/ai-stack/openpets-bridge path is still recognised as a fallback
+    # in the tray menu's "Open Bridge Log" action.
+    log_dir = Path.home() / "Library/Logs/openpets-bridge"
     log_dir.mkdir(parents=True, exist_ok=True)
-    uid = os.getuid()
 
     # Bridge daemon (the only agent we install — controls live in OpenPets.app)
     plist = _launchd_plist_path(LAUNCHD_LABEL)
@@ -122,8 +152,7 @@ def cmd_install(args) -> int:
         stdout_log=str(log_dir / "launchd.stdout.log"),
         stderr_log=str(log_dir / "launchd.stderr.log"),
     ))
-    os.system(f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL} 2>/dev/null")
-    rc = os.system(f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))}")
+    rc = _reload_launchd_agent(LAUNCHD_LABEL, plist)
     if rc != 0:
         print(f"WARN: bridge bootstrap returned {rc} — run `launchctl bootstrap "
               f"gui/$(id -u) {plist}` manually", file=sys.stderr)
@@ -134,6 +163,7 @@ def cmd_install(args) -> int:
     # tear it down silently — controls now live in OpenPets.app.
     legacy_plist = _launchd_plist_path(LEGACY_MENUBAR_LABEL)
     if legacy_plist.exists():
+        uid = os.getuid()
         os.system(f"launchctl bootout gui/{uid}/{LEGACY_MENUBAR_LABEL} 2>/dev/null")
         legacy_plist.unlink()
         print(f"Removed legacy menubar agent: {legacy_plist}")
@@ -149,7 +179,7 @@ def cmd_list_pets(args) -> int:
         for root in petsmod.DEFAULT_PET_ROOTS:
             print(f"  - {root}")
         print("\nInstall a pack into one of those folders, or download one"
-              " from https://openpets.dev")
+              " from https://openpets.sh/gallery")
         return 1
     print(f"{len(pets)} pet pack(s) installed:\n")
     for p in pets:
@@ -303,29 +333,34 @@ def cmd_discover_sources(args) -> int:
     return 0
 
 
-def _restart_bridge_daemon() -> None:
-    """Best-effort bootout+bootstrap so the bridge picks up new config.
+def _reload_launchd_agent(label: str, plist: Path) -> int:
+    """Atomic bootout + bootstrap cycle for a single launchd label.
 
-    launchd needs a short pause after bootout before bootstrap will accept
-    the same label again — otherwise it returns `Bootstrap failed: 5:
-    Input/output error`. We retry once with a longer pause if the first
-    bootstrap fails.
+    launchd needs a short pause after bootout before bootstrap accepts the
+    same label again — otherwise it returns ``Bootstrap failed: 5: Input/output
+    error``. We retry once with a longer pause if the first bootstrap fails.
+
+    Returns the exit code of the final bootstrap attempt (0 on success).
+    Errors are best-effort: we never raise.
     """
-    import time
     uid = os.getuid()
+    # bootout is allowed to fail (e.g. agent not loaded yet) — ignore rc.
+    os.system(f"launchctl bootout gui/{uid}/{label} 2>/dev/null")
+    time.sleep(0.8)  # let launchd actually unload the service
+    quoted = shlex_quote(str(plist))
+    rc = os.system(f"launchctl bootstrap gui/{uid} {quoted} 2>/dev/null")
+    if rc != 0:
+        time.sleep(1.0)  # one retry after a longer pause
+        rc = os.system(f"launchctl bootstrap gui/{uid} {quoted} 2>/dev/null")
+    return rc
+
+
+def _restart_bridge_daemon() -> None:
+    """Best-effort restart so the bridge picks up new config."""
     plist = _launchd_plist_path(LAUNCHD_LABEL)
     if not plist.exists():
         return  # daemon not installed → nothing to restart
-    os.system(f"launchctl bootout gui/{uid}/{LAUNCHD_LABEL} 2>/dev/null")
-    time.sleep(0.8)  # let launchd actually unload the service
-    rc = os.system(
-        f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))} 2>/dev/null"
-    )
-    if rc != 0:
-        time.sleep(1.0)  # one retry after a longer pause
-        rc = os.system(
-            f"launchctl bootstrap gui/{uid} {shutil_quote(str(plist))} 2>/dev/null"
-        )
+    rc = _reload_launchd_agent(LAUNCHD_LABEL, plist)
     if rc != 0:
         print(f"  note: launchd reload returned {rc} — restart manually if needed",
               file=sys.stderr)
@@ -379,10 +414,6 @@ def cmd_uninstall(args) -> int:
             print(f"Removed {plist}")
     print("openpets-bridge uninstalled (config + logs left in place)")
     return 0
-
-
-def shutil_quote(s: str) -> str:
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -71,10 +71,18 @@ class MultiPetMode:
 
     # ------------------------------------------------------------------
     def _spawn_hosts(self) -> None:
+        """Spawn an `openpets run` host for each enabled, unmuted source.
+
+        Idempotent: sources that already have a live entry in ``self._hosts``
+        or ``self._clients`` are skipped, so this can safely be called from
+        ``_respawn_dead_hosts`` to fill in only the missing slots.
+        """
         bin_path = _resolve_binary()
         for sid, cfg in self._configs.items():
             if not cfg.enabled or cfg.muted:
                 continue
+            if sid in self._hosts or sid in self._clients:
+                continue  # already running — don't double-spawn
             extra = cfg.extra or {}
             pet_dir = extra.get("pet_dir") or extra.get("pet")
             socket_path = extra.get("socket") or f"/tmp/openpets-{sid}.sock"
@@ -178,6 +186,7 @@ class MultiPetMode:
             if same and (now - rec.last_push_ts) < self._throttle:
                 continue
 
+            prev_status = rec.last_status
             new_tid = client.notify(
                 title=title, text=text, status=u.status, thread_id=rec.thread_id,
             )
@@ -188,15 +197,19 @@ class MultiPetMode:
             rec.last_push_ts = now
             rec.done_at = now if u.status == "done" else None
             self._store.upsert(rec)
-            # Privacy: log only metadata, never bubble content
-            log.info("[multi/%s/%s] status=%s",
-                     u.source_id, u.session_id[:8] + "…", u.status)
+            # Privacy: log only metadata, never bubble content.
+            # INFO when status transitions, DEBUG otherwise — avoids the
+            # log spam we used to emit on every poll cycle even when the
+            # bubble was unchanged.
+            level = logging.INFO if prev_status != u.status else logging.DEBUG
+            log.log(level, "[multi/%s/%s] status=%s",
+                    u.source_id, u.session_id[:8] + "…", u.status)
         self._store.save()
 
     # ------------------------------------------------------------------
     def tick(self) -> None:
-        """Periodic upkeep — only clears bubbles when [bridge].auto_clear_after_s
-        is set in config (defaults to off; last bubble per session persists)."""
+        """Periodic upkeep — auto-clear stale bubbles + respawn dead hosts."""
+        self._respawn_dead_hosts()
         if self._auto_clear_after_s is None or self._auto_clear_after_s <= 0:
             return
         now = time.time()
@@ -213,3 +226,31 @@ class MultiPetMode:
                      rec.source_id, rec.session_id[:8] + "…",
                      now - rec.done_at)
         self._store.save()
+
+    # ------------------------------------------------------------------
+    def _respawn_dead_hosts(self) -> None:
+        """Re-launch any ``openpets run`` child that exited since last tick.
+
+        launchd's KeepAlive watches `openpets-bridge` itself, but the
+        per-source pet hosts it spawns are vanilla subprocesses — without
+        this they stay dead until the bridge daemon is restarted.
+        """
+        if not self._hosts:
+            return
+        dead: list[str] = []
+        for sid, proc in self._hosts.items():
+            if proc.poll() is not None:
+                log.warning(
+                    "multi-pet: host for %s exited (rc=%s) — respawning",
+                    sid, proc.returncode,
+                )
+                dead.append(sid)
+        if not dead:
+            return
+        # Drop the dead entries and let _spawn_hosts rebuild for ALL enabled
+        # sources missing a host. (We only re-spawn dead ones; live hosts are
+        # left alone via the `sid in self._hosts` guard inside _spawn_hosts.)
+        for sid in dead:
+            self._hosts.pop(sid, None)
+            self._clients.pop(sid, None)
+        self._spawn_hosts()

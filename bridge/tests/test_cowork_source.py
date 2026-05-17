@@ -101,6 +101,44 @@ def test_session_id_format(tmp_path: Path):
     assert updates and updates[0].session_id == "local_xyz"
 
 
+def test_done_emitted_after_session_goes_idle(tmp_path: Path, monkeypatch):
+    """A watched session that grew, then went quiet > IDLE_AFTER_S, emits done once."""
+    import openpets_bridge.sources.cowork as cowork_mod
+
+    audit = _make_session(tmp_path, "idle_one")
+    cfg = _cfg()
+    cfg.extra["sessions_root"] = str(tmp_path)
+    src = CoworkSource(cfg)
+
+    list(src.poll())  # baseline (empty file)
+
+    # 1. Watched growth — appends a tool_use; activity is fresh.
+    with audit.open("a") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
+        ]}}) + "\n")
+    audit.touch()
+    growth_updates = list(src.poll())
+    assert len(growth_updates) == 1
+    assert growth_updates[0].status == "running"
+
+    # 2. Now jump time forward past IDLE_AFTER_S and ACTIVITY_WINDOW_S so the
+    #    session is "idle". We monkeypatch time.time so we don't need to sleep.
+    real_time = time.time()
+    later = real_time + cowork_mod.IDLE_AFTER_S + 1
+    monkeypatch.setattr(cowork_mod.time, "time", lambda: later)
+
+    idle_updates = list(src.poll())
+    assert len(idle_updates) == 1, f"expected one 'done' bubble after idle, got {idle_updates}"
+    assert idle_updates[0].status == "done"
+    assert idle_updates[0].is_active is False
+
+    # 3. Subsequent polls should NOT re-emit done (emitted_done flag).
+    monkeypatch.setattr(cowork_mod.time, "time", lambda: later + 5)
+    again = list(src.poll())
+    assert again == [], f"done should be emitted only once, got {again}"
+
+
 # --- status flip tests ---------------------------------------------------
 
 from openpets_bridge.sources.cowork import _derive_status_text

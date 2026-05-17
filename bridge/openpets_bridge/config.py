@@ -126,7 +126,10 @@ class BridgeConfig:
     # session stays until the user clears manually via the menubar).
     # Set to e.g. 600 to auto-wipe a 'done' bubble after 10 min of quiet.
     auto_clear_after_s: float = 0.0
-    log_path: str = str(Path.home() / "ai-stack/openpets-bridge/bridge.log")
+    # Canonical macOS log location. Users with an existing config pointing
+    # at ~/ai-stack/openpets-bridge/bridge.log keep working — only the
+    # default for fresh installs changes.
+    log_path: str = str(Path.home() / "Library/Logs/openpets-bridge/bridge.log")
     sources: dict[str, SourceConfig] = field(default_factory=dict)
 
 

@@ -270,27 +270,57 @@ final class OpenPetsCLIContextMenuTarget: NSObject {
     }
 
     private func runBridge(args: [String]) -> String {
+        // OpenPetsCLI is a standalone executable target that cannot import
+        // OpenPetsMenuBar, so this duplicates the bridge-binary lookup. Keep
+        // both implementations in sync (see BridgeBinaryLocator in
+        // OpenPetsBridgeSubmenu.swift).
         let candidates = [
             "/opt/homebrew/bin/openpets-bridge",
             "/usr/local/bin/openpets-bridge",
             (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/openpets-bridge"),
         ]
-        guard let bin = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            return ""
+        var bin = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+        if bin == nil {
+            // Fallback to PATH via /usr/bin/env which.
+            let probe = Process()
+            probe.launchPath = "/usr/bin/env"
+            probe.arguments = ["which", "openpets-bridge"]
+            let probeOut = Pipe()
+            probe.standardOutput = probeOut
+            probe.standardError = Pipe()
+            do {
+                try probe.run()
+                probe.waitUntilExit()
+                if probe.terminationStatus == 0 {
+                    let data = probeOut.fileHandleForReading.readDataToEndOfFile()
+                    if let s = String(data: data, encoding: .utf8) {
+                        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if FileManager.default.isExecutableFile(atPath: trimmed) {
+                            bin = trimmed
+                        }
+                    }
+                }
+            } catch {
+                bin = nil
+            }
         }
+        guard let resolvedBin = bin else { return "" }
         let task = Process()
-        task.launchPath = bin
+        task.launchPath = resolvedBin
         task.arguments = args
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = out
+        // stdout and stderr captured separately so we never accidentally mix
+        // warnings into a parser's input.
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
         do {
             try task.run()
             task.waitUntilExit()
         } catch {
             return ""
         }
-        return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
     private func installRestoreStatusItem() {

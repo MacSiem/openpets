@@ -102,6 +102,7 @@ class SinglePetMode:
         if same and (now - rec.last_push_ts) < self._throttle:
             return
 
+        prev_status = rec.last_status
         new_tid = self._client.notify(
             title=title, text=text, status=u.status, thread_id=rec.thread_id,
         )
@@ -118,5 +119,7 @@ class SinglePetMode:
             rec.done_at = None  # session got active again — reset timer
 
         self._store.upsert(rec)
-        log.info("[%s/%s] status=%s",
-                 u.source_id, u.session_id[:8] + "…", u.status)
+        # INFO when status transitions, DEBUG otherwise — avoids per-poll spam.
+        level = logging.INFO if prev_status != u.status else logging.DEBUG
+        log.log(level, "[%s/%s] status=%s",
+                u.source_id, u.session_id[:8] + "…", u.status)

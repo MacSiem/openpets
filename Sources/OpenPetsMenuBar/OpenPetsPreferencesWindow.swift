@@ -461,17 +461,7 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
     }
 
     private func bridgeBinaryPath() -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/openpets-bridge",
-            "/usr/local/bin/openpets-bridge",
-            (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/openpets-bridge"),
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        return nil
+        return BridgeBinaryLocator.find()
     }
 
     @discardableResult
@@ -480,16 +470,19 @@ final class OpenPetsPreferencesWindowController: NSWindowController, NSToolbarDe
         let task = Process()
         task.launchPath = bin
         task.arguments = args
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = out
+        // stdout and stderr captured separately so callers parsing JSON
+        // (e.g. `config show`) don't ingest warning noise.
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
         do {
             try task.run()
             task.waitUntilExit()
         } catch {
             return nil
         }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         return BridgeCommandResult(
             status: task.terminationStatus,
             output: String(data: data, encoding: .utf8) ?? ""

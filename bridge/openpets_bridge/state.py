@@ -69,6 +69,7 @@ class ThreadStore:
 
     # ------------------------------------------------------------------
     def load(self) -> None:
+        self._cleanup_orphan_tmps()
         if not self.path.is_file():
             return
         try:
@@ -121,6 +122,7 @@ class ThreadStore:
             return
         if not force and (now - self._last_save_ts) < SAVE_THROTTLE_S:
             return
+        tmp_name: str | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -130,14 +132,45 @@ class ThreadStore:
             tmp = tempfile.NamedTemporaryFile(
                 mode="w", dir=str(self.path.parent), delete=False, suffix=".tmp"
             )
+            tmp_name = tmp.name
             try:
                 json.dump(payload, tmp, indent=2)
                 tmp.flush()
                 os.fsync(tmp.fileno())
             finally:
                 tmp.close()
-            os.replace(tmp.name, self.path)
+            os.replace(tmp_name, self.path)
+            tmp_name = None  # successfully renamed — no cleanup needed
             self._last_save_ts = now
             self._dirty = False
         except OSError as e:  # noqa: BLE001
             log.warning("could not write state file %s: %s", self.path, e)
+        finally:
+            # If we created a temp file but never managed to os.replace it,
+            # clean it up — otherwise crashes / disk-full errors during save
+            # leave orphan *.tmp files in the state directory.
+            if tmp_name is not None:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+
+    def _cleanup_orphan_tmps(self) -> None:
+        """Remove stale *.tmp files left over from previous crashed saves.
+
+        Called from `load()` so the state directory stays tidy across daemon
+        restarts. Anything older than 5 minutes is fair game.
+        """
+        try:
+            parent = self.path.parent
+            if not parent.is_dir():
+                return
+            cutoff = time.time() - 300
+            for p in parent.glob("*.tmp"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except OSError:
+                    continue
+        except OSError:
+            pass

@@ -203,6 +203,25 @@ def _derive_status_text(events: list[dict]) -> tuple[str, str]:
     return status, body
 
 
+class _SessionState:
+    """Per-file bookkeeping for the cowork poller.
+
+    ``grew_under_watch`` is True once we've observed any size growth on this
+    session since we started polling. We need that flag to emit a final
+    "done" bubble when the session goes idle — without it, we'd never know
+    whether a session that ends up quiet was "we watched it grow then stop"
+    (emit done) or "it was already on disk and never moved" (stay silent).
+    """
+
+    __slots__ = ("last_mtime", "last_size", "emitted_done", "grew_under_watch")
+
+    def __init__(self, mtime: float, size: int) -> None:
+        self.last_mtime = mtime
+        self.last_size = size
+        self.emitted_done = False
+        self.grew_under_watch = False
+
+
 class CoworkSource(Source):
     id = "cowork"
 
@@ -210,8 +229,7 @@ class CoworkSource(Source):
         super().__init__(config)
         self._sessions_root = Path(self.config.extra.get("sessions_root", str(SESSIONS_ROOT))) \
             if self.config.extra else SESSIONS_ROOT
-        # session path → (last_mtime, last_size, last_emitted_done)
-        self._state: dict[Path, tuple[float, int, bool]] = {}
+        self._state: dict[Path, _SessionState] = {}
 
     def poll(self) -> Iterable[SourceUpdate]:
         now = time.time()
@@ -230,29 +248,38 @@ class CoworkSource(Source):
             # of historical "done" or stale "running" bubbles when the
             # daemon (re)starts and finds 100s of old session files.
             if path not in self._state:
-                self._state[path] = (stt.st_mtime, stt.st_size, False)
+                self._state[path] = _SessionState(stt.st_mtime, stt.st_size)
                 continue
 
-            last_mtime, last_size, emitted_done = self._state[path]
-            size_grew = stt.st_size > last_size
+            st = self._state[path]
+            size_grew = stt.st_size > st.last_size
             is_active = (now - stt.st_mtime) < ACTIVITY_WINDOW_S
 
             session_id = path.parent.name  # local_<uuid>
 
             if is_active and size_grew:
                 status, body = _derive_status_text(_tail_json_lines(path))
-                self._state[path] = (stt.st_mtime, stt.st_size, False)
+                st.last_mtime = stt.st_mtime
+                st.last_size = stt.st_size
+                st.emitted_done = False
+                st.grew_under_watch = True
                 yield SourceUpdate(
                     source_id=self.id, session_id=session_id,
                     title=_session_title(path),
                     body=body, status=status, is_active=True,
                 )
-            elif (not is_active and not emitted_done and last_size > 0
-                  and last_size < stt.st_size
+            elif (not is_active and not st.emitted_done
+                  and st.grew_under_watch
                   and (now - stt.st_mtime) > IDLE_AFTER_S):
                 # Was observed growing → now quiet long enough → emit done
-                # exactly once.
-                self._state[path] = (stt.st_mtime, stt.st_size, True)
+                # exactly once. We use the in-state `grew_under_watch` flag
+                # (set on the first growth poll above) rather than comparing
+                # the current size to a stored size, because we always update
+                # `last_size` on every growth poll — so a size comparison
+                # would never be true here.
+                st.last_mtime = stt.st_mtime
+                st.last_size = stt.st_size
+                st.emitted_done = True
                 yield SourceUpdate(
                     source_id=self.id, session_id=session_id,
                     title=_session_title(path),
@@ -260,4 +287,5 @@ class CoworkSource(Source):
                 )
             else:
                 # Update bookkeeping silently
-                self._state[path] = (stt.st_mtime, stt.st_size, emitted_done)
+                st.last_mtime = stt.st_mtime
+                st.last_size = stt.st_size
